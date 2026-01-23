@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
-from anytree import Node, NodeMixin, RenderTree, AsciiStyle
+from anytree import NodeMixin, RenderTree, AsciiStyle
 from anytree.iterators.zigzaggroupiter import ZigZagGroupIter
-from dataframe_utils import loadTeamNames, getPossMatches
+from utils.dataframe_utils import loadTeamNames
 
 
 def scoreBracket(br, truth_br, score_type=None):
