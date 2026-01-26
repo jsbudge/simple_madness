@@ -9,6 +9,8 @@ class LegendreScalarPolynomialFeatures(TransformerMixin, BaseEstimator):
     """
     This polynomial feature uses a Legendre basis to create uncorrelated features. In order to use it,
     it needs all features to be within [-1, 1].
+    For more information, I have a blog post:
+    https://alexshtf.github.io/2025/08/19/Orthogonality.html
 
     """
     def __init__(self, degree=2, include_bias=False):

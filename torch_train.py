@@ -2,9 +2,8 @@ import pandas as pd
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelCheckpoint
-from dataloader import EncoderDataModule, PredictorDataModule
-from model import Encoder, Predictor
-from sklearn.decomposition import KernelPCA
+from dataloader import GameDataModuleCV
+from torch_model import Predictor
 import numpy as np
 from tqdm import tqdm
 import itertools
@@ -23,16 +22,12 @@ if __name__ == '__main__':
         except yaml.YAMLError as exc:
             print(exc)
 
-    # First, run the encoding to try and reduce the dimension of the data
-    fnme = f'MNormalized{method}EncodedData' if prenorm else f'M{method}EncodedData'
-    enc_df = pd.read_csv(f'{config["dataloader"]["datapath"]}/{fnme}.csv').set_index(['season', 'tid'])
-
-    data = PredictorDataModule(**config['dataloader'], file=enc_df)
+    data = GameDataModuleCV(**config['dataloader'], is_tourney=False)
     data.setup()
 
     # Get the model, experiment, logger set up
     config['model']['init_size'] = data.train_dataset.data_len
-    mdl_name = f"{config['model']['name']}_{fnme}"
+    mdl_name = f"{config['model']['name']}"
     model = Predictor(**config['model'])
     logger = loggers.TensorBoardLogger(config['model']['training']['log_dir'], version=0, name=mdl_name)
     expected_lr = max((config['model']['lr'] * config['model']['scheduler_gamma'] ** (config['model']['training']['max_epochs'] *
@@ -62,9 +57,11 @@ if __name__ == '__main__':
     if config['model']['training']['save_model']:
         trainer.save_checkpoint(f"{config['model']['training']['weights_path']}/{mdl_name}.ckpt")
 
-    t0, t1, label = next(iter(data.train_dataloader()))
+    t0, label = data.val_dataset.full_data()
+    results = pd.DataFrame(index=data.val_dataset.gids.index, columns=['Res'])
 
-    check = model(t0.to(model.device), t1.to(model.device))
-    check = np.concatenate((check.cpu().data.numpy(), label.cpu().data.numpy()), axis=-1)
+    check = model(t0.to(model.device))
+    results['Res'] = check.cpu().data.numpy()
+    results['Truth'] = label.cpu().data.numpy()
 
 

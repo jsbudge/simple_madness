@@ -79,11 +79,11 @@ def getPossMatches(team_feats, season, diff=False, use_seed=True, datapath=None,
     poss_games['season'] = season
     poss_games['gid'] = np.arange(poss_games.shape[0])
     gsc = poss_games.set_index(['gid', 'season'])
-    g1 = gsc.merge(team_feats, left_on=['season', 'tid'],
-                   right_on=['season', 'tid'], right_index=True).sort_index()
+    g1 = gsc.merge(team_feats, left_on=['tid', 'season'],
+                   right_on=['tid', 'season'], right_index=True).sort_index()
     g1 = g1.reset_index().set_index(['gid', 'season', 'tid', 'oid'])
-    g2 = gsc.merge(team_feats, left_on=['season', 'oid'],
-                   right_on=['season', 'tid'],
+    g2 = gsc.merge(team_feats, left_on=['oid', 'season'],
+                   right_on=['tid', 'season'],
                    right_index=True).sort_index()
     g2 = g2.reset_index().set_index(['gid', 'season', 'tid', 'oid'])
     if diff:

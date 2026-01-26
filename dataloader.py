@@ -7,34 +7,39 @@ from multiprocessing import cpu_count
 from pathlib import Path
 from glob import glob
 import numpy as np
+import pandas as pd
+from utils.dataframe_utils import prepFrame, getMatches
+from utils.sklearn_utils import SeasonalSplit, get_legendre_pipeline
 
 
 class GameDataset(Dataset):
-    def __init__(self, datapath: str = './data', is_val: bool = False, seed: int = 7):
+    def __init__(self, datapath: str = './data', is_val: bool = False, is_tourney: bool = False, season: int = 2023, seed: int = 7):
         # Load in data
         self.datapath = datapath
         self.data = []
-        start = 2010 if not is_val else 2021
-        end = 2025 if is_val else 2021
-        for season in range(start, end):
-            dp = f'{datapath}/t{season}'
-            if Path(f'{datapath}/{season}').exists():
-                self.data.append(glob(f'{dp}/*.pt'))
-        self.data = np.concatenate(self.data)
-        np.random.shuffle(self.data)
-        # Xt, Xs = train_test_split(self.data, random_state=seed)
-        # self.data = Xs if is_val else Xt
-        check = torch.load(self.data[0])
-        self.data_len = check[0].shape[-1]
+        raw_features = pd.read_csv(Path(f'{datapath}/NormalizedEloAverages.csv')).set_index(['season', 'tid'])
+        gids = prepFrame(pd.read_csv(Path(f'{datapath}/MNCAATourneyCompactResults.csv'))) if is_tourney else (
+            prepFrame(pd.read_csv(Path(f'{datapath}/MRegularSeasonCompactResults.csv'))))
+        data = gids.loc[gids.index.get_level_values(1) == season] if is_val else gids.loc[gids.index.get_level_values(1) != season]
+        pipe = get_legendre_pipeline(degree=3)
+        data = data.loc[:, 2004:, :, :]
+        self.labels = torch.tensor(((data['t_score'] - data['o_score']) > 0).values).reshape(-1, 1).float()
+        self.data = getMatches(data, raw_features, diff=True)
+        self.gids = data
+        self.data = torch.tensor(pipe.fit_transform(self.data)).float()
+        self.data_len = self.data.shape[1]
 
     def __getitem__(self, idx):
-        return torch.load(self.data[idx])
+        return self.data[idx], self.labels[idx]
 
     def __len__(self):
         return self.data.shape[0]
 
+    def full_data(self):
+        return self.data, self.labels
 
-class GameDataModule(LightningDataModule):
+
+class GameDataModuleCV(LightningDataModule):
     def __init__(
             self,
             train_batch_size: int = 8,
@@ -43,6 +48,8 @@ class GameDataModule(LightningDataModule):
             single_example: bool = False,
             device: str = 'cpu',
             datapath: str = './data',
+            is_tourney: bool = False,
+            season: int = 2023,
             **kwargs,
     ):
         super().__init__()
@@ -56,10 +63,18 @@ class GameDataModule(LightningDataModule):
         self.single_example = single_example
         self.device = device
         self.datapath = datapath
+        self.is_tourney = is_tourney
+        self.season = season
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = GameDataset(self.datapath)
-        self.val_dataset = GameDataset(self.datapath, is_val=True)
+        self.train_dataset = GameDataset(self.datapath, season=self.season, is_tourney=self.is_tourney)
+        self.val_dataset = GameDataset(self.datapath, season=self.season, is_val=True, is_tourney=self.is_tourney)
+
+    def changeSeason(self, season: int, is_tourney: bool = False) -> None:
+        self.season = season
+        self.is_tourney = is_tourney
+        self.train_dataset = GameDataset(self.datapath, season=self.season, is_tourney=self.is_tourney)
+        self.val_dataset = GameDataset(self.datapath, season=self.season, is_val=True, is_tourney=self.is_tourney)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

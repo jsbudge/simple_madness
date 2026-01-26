@@ -1,6 +1,6 @@
 from typing import Any
 import numpy as np
-from bayesian_torch.models.dnn_to_bnn import dnn_to_bnn
+from activations import GrowingCosine, ParameterSinLU, _xavier_init
 import torch
 from pytorch_lightning import LightningModule
 from torch import nn, Tensor
@@ -20,30 +20,22 @@ class Predictor(LightningModule):
         self.weight_decay = weight_decay
         self.scheduler_gamma = scheduler_gamma
         self.betas = betas
-        self.encoded_size = self.init_size * 2 * encoded_sz
         self.e_sz = encoded_sz
         self.sigma = sigma
 
         self.apply_opp = nn.Sequential(
-            nn.Linear(self.encoded_size * 2, self.latent_size),
-            nn.SiLU(),
+            nn.Linear(self.init_size, self.latent_size),
+            ParameterSinLU(),
+            nn.Linear(self.latent_size, self.latent_size),
+            GrowingCosine(),
             nn.Linear(self.latent_size, self.output_size),
             nn.Sigmoid()
         )
 
-        dnn_to_bnn(self.apply_opp, bnn_prior_parameters={
-            "prior_mu": 0.0,
-            "prior_sigma": 1.0,
-            "posterior_mu_init": 0.0,
-            "posterior_rho_init": -4.0,
-            "type": "Reparameterization",  # Flipout or Reparameterization
-            "moped_enable": False,
-        })
+        _xavier_init(self)
 
-    def forward(self, x, y):
-        ex = positional_encoding(x, self.sigma, self.e_sz)
-        ey = positional_encoding(y, self.sigma, self.e_sz)
-        x = self.apply_opp(torch.cat([ex, ey], dim=-1))
+    def forward(self, x):
+        x = self.apply_opp(x)
         return x
 
     def loss_function(self, y, y_pred):
@@ -83,16 +75,16 @@ class Predictor(LightningModule):
                                       eps=1e-7)
         if self.scheduler_gamma is None:
             return optimizer
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.scheduler_gamma)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=120, eta_min=self.scheduler_gamma)
         '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
                                                          factor=self.params['scheduler_gamma'], threshold=1e-5)'''
 
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def train_val_get(self, batch, batch_idx, kind='train'):
-        team, opp, targets = batch
+        team, targets = batch
 
-        results = self.forward(team, opp)
+        results = self.forward(team)
         train_loss = self.loss_function(results, targets)
 
         self.log_dict({f'{kind}_loss': train_loss}, on_epoch=True,

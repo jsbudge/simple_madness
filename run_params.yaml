@@ -1,0 +1,40 @@
+load_data:
+  data_path: ./data
+  init_elo_params: [0.3896076731384477, 6.51988202753904, 34.11927604457895, 0.17251109126016217]
+  init_season: 2003
+  save_path: ../madness-torch/data  # This should usually be the same as the data_path
+  save_files: True
+  run_elo_opt: False
+  run_rank_opt: True
+
+prep_data:
+  game_av: 5
+
+dataloader:
+  datapath: /home/jeff/repo/madness-torch/data
+  train_batch_size: 128
+  val_batch_size: 128
+  split: .7
+  season: 2023
+  single_example: False
+  pin_memory: False
+
+model:
+  name: Predictor
+  init_size: 128
+  latent_size: 65
+  sigma: 10.
+  lr: .0000001
+  weight_decay: 0.5
+  scheduler_gamma: .000000001
+  betas: [.9, .99]
+  num_samples: 100
+  training:
+    log_dir: ./logs
+    swa_start: .7
+    max_epochs: 10000
+    log_epoch: 50
+    weights_path: ./models
+    warm_start: False
+    save_model: False
+    patience: 50
