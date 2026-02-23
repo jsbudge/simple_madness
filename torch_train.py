@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelCheckpoint
-from dataloader import GameDataModuleCV
+from dataloader import KalmanDataModuleCV
 from torch_model import Predictor
 import numpy as np
 from tqdm import tqdm
@@ -22,7 +22,7 @@ if __name__ == '__main__':
         except yaml.YAMLError as exc:
             print(exc)
 
-    data = GameDataModuleCV(**config['dataloader'], is_tourney=False)
+    data = KalmanDataModuleCV(**config['dataloader'], is_tourney=False)
     data.setup()
 
     # Get the model, experiment, logger set up

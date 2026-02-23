@@ -46,6 +46,17 @@ class ParameterSinLU(nn.Module):
         return torch.sigmoid(x) * (x + self.a * torch.sin(self.b * x))
 
 
+class TimeScaledLinear(nn.Module):
+    def __init__(self, in_features, out_features, activation=None, bias=True):
+        super(TimeScaledLinear, self).__init__()
+        self.l0 = nn.Linear(in_features, in_features, bias=bias)
+        self.activation = activation if activation is not None else nn.SiLU()
+        self.l1 = nn.Linear(in_features, out_features, bias=bias)
+
+    def forward(self, x, dt):
+        return self.activation(self.l1(self.activation(self.l0(x) * dt)))
+
+
 nonlinearities = {'silu': nn.SiLU(), 'gelu': nn.GELU(), 'selu': nn.SELU(), 'leaky': nn.LeakyReLU(),
                   'grow': GrowingCosine(), 'elish': ELiSH(), 'sinlu': SinLU(), 'psinlu': ParameterSinLU(),
                   'mish': nn.Mish()}

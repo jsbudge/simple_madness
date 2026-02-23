@@ -2,18 +2,18 @@ load_data:
   data_path: ./data
   init_elo_params: [0.3896076731384477, 6.51988202753904, 34.11927604457895, 0.17251109126016217]
   init_season: 2003
-  save_path: ../madness-torch/data  # This should usually be the same as the data_path
+  save_path: ./data  # This should usually be the same as the data_path
   save_files: True
   run_elo_opt: False
-  run_rank_opt: True
+  run_rank_opt: False
 
 prep_data:
   game_av: 5
 
 dataloader:
-  datapath: /home/jeff/repo/madness-torch/data
-  train_batch_size: 128
-  val_batch_size: 128
+  datapath: ./data
+  train_batch_size: 1
+  val_batch_size: 1
   split: .7
   season: 2023
   single_example: False
