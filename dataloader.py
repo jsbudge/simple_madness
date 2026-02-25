@@ -45,6 +45,7 @@ class KalmanDataset(Dataset):
         self.datapath = datapath
         self.data = []
         raw_features = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
+        raw_features = (raw_features - raw_features.mean()) / raw_features.std()
         y_gids = prepFrame(pd.read_csv(Path(f'{datapath}/MNCAATourneyCompactResults.csv')))
         opp_gids = prepFrame(pd.read_csv(Path(f'{datapath}/MRegularSeasonDetailedResults.csv')))
         y_data = y_gids.loc[y_gids.index.get_level_values(1) == season] if is_val else y_gids.loc[y_gids.index.get_level_values(1) != season]
@@ -59,7 +60,7 @@ class KalmanDataset(Dataset):
 
         # self.opp_data = torch.tensor(np.stack([grp.values[-4:] for idx, grp in self.opp_data]))
         kmd = opp_data[['t_ast', 't_score', 't_stl', 't_blk']]
-        self.kalman_measure_data = torch.tensor(kmd.values, dtype=torch.float32)
+        self.kalman_measure_data = torch.tensor(kmd.values / np.array([50, 130, 40, 40]), dtype=torch.float32)
         # self.kalman_measure_data = torch.tensor(np.stack([grp.values[-4:] for idx, grp in kmd]))
         self.gids = (y_gids, opp_gids)
         self.data_len = self.y_data[0].shape[1]
