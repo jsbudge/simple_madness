@@ -3,9 +3,11 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from sklearn.linear_model import Ridge
+from sklearn.decomposition import TruncatedSVD
 from utils.dataframe_utils import prepFrame, addAdvStatstoFrame, addSeasonalStatsToFrame, normalize
 from scipy.optimize import basinhopping
 from tqdm import tqdm
+import torch
 
 with open('./run_params.yaml', 'r') as file:
     try:
@@ -111,7 +113,7 @@ scdf['o_elo'] = 1500.
 def runElo(x):
     scarray = scdf.reset_index().values
     curr_elo = np.ones(max(tids) + 1) * 1500
-    curr_seas = 2002
+    curr_seas = 2001
     mu_reg = x[0]
     margin = x[1]
     k = x[2]
@@ -226,18 +228,18 @@ if config['load_data']['save_files']:
     sdf.to_csv(Path(f'{config["load_data"]["save_path"]}/GameDataBasic.csv'))
 
 # Create a dataframe of the tournament results with average data
-'''ncaa_fnme = f'{config["load_data"]["data_path"]}/{gender}NCAATourneyCompactResults.csv'
+ncaa_fnme = f'{config["load_data"]["data_path"]}/MNCAATourneyCompactResults.csv'
 ncaa_tdf = pd.read_csv(ncaa_fnme)
 
 ncaa_tdf = prepFrame(ncaa_tdf)
 
 # Add in secondary tourney results
-sec_fnme = f'{config["load_data"]["data_path"]}/{gender}SecondaryTourneyCompactResults.csv'
+sec_fnme = f'{config["load_data"]["data_path"]}/MSecondaryTourneyCompactResults.csv'
 sc_tdf = pd.read_csv(sec_fnme)
 ncaa_tdf = pd.concat([ncaa_tdf, prepFrame(sc_tdf)])
 ncaa_tdf['t_win'] = ncaa_tdf['t_score'] - ncaa_tdf['o_score'] > 0
 
-# merge information with teams
+'''# merge information with teams
 print('Generating tournament training data...')
 avdf_norm = normalize(avdf, to_season=True)
 # tdf, odf = getMatches(ncaa_tdf, avdf_norm)
@@ -245,3 +247,39 @@ avdf_norm = normalize(avdf, to_season=True)
 
 if config['load_data']['save_files']:
     avdf_norm.to_csv(Path(f'{config["load_data"]["save_path"]}/Averages.csv'))
+
+# Use this data to build initial state vectors for teams
+init_df = adf[['t_elo']].groupby(['season', 'tid']).first().reset_index()
+
+last_season_conf = conf
+last_season_conf['season'] += 1
+init_df = init_df.merge(last_season_conf, how='left', on=['season', 'tid']).drop(columns=['ConfAbbrev']).set_index(['season', 'tid'])
+init_df = (init_df - adf['t_elo'].mean()) / adf['t_elo'].std()
+
+# Add coaches - impute for the girls
+coaches = pd.read_csv(Path(f"{config['load_data']['data_path']}/MTeamCoaches.csv")).rename(columns={'TeamID': 'tid', 'Season': 'season'})
+coaches['span'] = coaches['LastDayNum'] - coaches['FirstDayNum']
+coaches['coach_exp'] = coaches[['span', 'CoachName']].groupby(['CoachName']).cumsum()
+coaches['coach_exp'] -= coaches['span']  # Make sure this is representative of the start of the season
+tourney_wins = coaches.loc[coaches['LastDayNum'] == 154]
+win_df = tourney_wins.join(ncaa_tdf.groupby(['season', 'tid']).sum(), how='left', on=['season', 'tid']).fillna(0)
+win_df['coach_twins'] = win_df[['CoachName', 't_win']].groupby(['CoachName']).cumsum()
+win_df['coach_twins'] -= win_df['t_win']
+coaches = coaches.loc[coaches['FirstDayNum'] == 0]
+coaches = coaches.reset_index().merge(win_df[['season', 'CoachName', 'coach_twins']], on=['season', 'CoachName'])
+coaches = coaches.set_index(['season', 'tid']).drop(columns=['index', 'FirstDayNum', 'LastDayNum', 'CoachName', 'span'])
+coaches = (coaches - coaches.mean()) / coaches.std()
+init_df = init_df.join(coaches, how='left', on=['season', 'tid'])
+
+init_df = init_df.fillna(0)  # This sets all NaNs to the mean so we don't consider them
+
+svd = TruncatedSVD(n_components=init_df.shape[1])
+
+state_df = pd.DataFrame(data=svd.fit_transform(init_df), index=init_df.index)
+
+# Save everything out to .pt files for modification in the Kalman filter
+if config['load_data']['save_files']:
+    for idx, row in tqdm(state_df.iterrows()):
+        # For each one, add some noise for the optimization routine
+        new_tensor = torch.tensor(np.concatenate([row.values, np.random.rand(10)]), dtype=torch.float32, requires_grad=False)
+        torch.save(new_tensor, Path(f'{config["load_data"]["save_path"]}/state_vectors/{idx[0]}_{idx[1]}.pt'))

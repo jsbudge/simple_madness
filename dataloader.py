@@ -13,24 +13,20 @@ from utils.sklearn_utils import SeasonalSplit, get_legendre_pipeline
 
 
 class GameDataset(Dataset):
-    def __init__(self, datapath: str = './data', is_val: bool = False, is_tourney: bool = False, season: int = 2023, seed: int = 7):
+    def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, game_num: int = 0, seed: int = 7):
         # Load in data
         self.datapath = datapath
-        self.data = []
-        raw_features = pd.read_csv(Path(f'{datapath}/NormalizedEloAverages.csv')).set_index(['season', 'tid'])
-        gids = prepFrame(pd.read_csv(Path(f'{datapath}/MNCAATourneyCompactResults.csv'))) if is_tourney else (
-            prepFrame(pd.read_csv(Path(f'{datapath}/MRegularSeasonCompactResults.csv'))))
+        gids = prepFrame(pd.read_csv(Path(f'{datapath}/MRegularSeasonDetailedResults.csv')))
         data = gids.loc[gids.index.get_level_values(1) == season] if is_val else gids.loc[gids.index.get_level_values(1) != season]
-        pipe = get_legendre_pipeline(degree=3)
-        data = data.loc[:, 2004:, :, :]
-        self.labels = torch.tensor(((data['t_score'] - data['o_score']) > 0).values).reshape(-1, 1).float()
-        self.data = getMatches(data, raw_features, diff=True)
-        self.gids = data
-        self.data = torch.tensor(pipe.fit_transform(self.data)).float()
-        self.data_len = self.data.shape[1]
+        data = data.loc[:, 2018:, :, :].reset_index().groupby(['season', 'tid']).nth(game_num)
+        self.labels = torch.tensor(data[['t_score', 't_ast', 't_blk', 't_dr']].values / np.array([150, 50, 50, 60])).float()
+        self.data = data.reset_index()[['season', 'tid', 'oid']].values
+        self.data_len = 16
 
     def __getitem__(self, idx):
-        return self.data[idx], self.labels[idx]
+        return (torch.load(f'{self.datapath}/state_vectors/{self.data[idx, 0]}_{self.data[idx, 1]}.pt', weights_only=True),
+                torch.load(f'{self.datapath}/state_vectors/{self.data[idx, 0]}_{self.data[idx, 2]}.pt', weights_only=True),
+                self.labels[idx], self.data[idx])
 
     def __len__(self):
         return self.data.shape[0]
@@ -43,34 +39,23 @@ class KalmanDataset(Dataset):
     def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, seed: int = 7):
         # Load in data
         self.datapath = datapath
-        self.data = []
-        raw_features = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
-        raw_features = (raw_features - raw_features.mean()) / raw_features.std()
-        y_gids = prepFrame(pd.read_csv(Path(f'{datapath}/MNCAATourneyCompactResults.csv')))
-        opp_gids = prepFrame(pd.read_csv(Path(f'{datapath}/MRegularSeasonDetailedResults.csv')))
-        y_data = y_gids.loc[y_gids.index.get_level_values(1) == season] if is_val else y_gids.loc[y_gids.index.get_level_values(1) != season]
-        y_data = y_data.loc[:, 2004:, :, :]
-        opp_data = opp_gids.loc[opp_gids.index.get_level_values(1) == season] if is_val else opp_gids.loc[
-            opp_gids.index.get_level_values(1) != season]
-        opp_data = opp_data.loc[:, 2004:, :, :]
-        self.labels = torch.tensor(((y_data['t_score'] - y_data['o_score']) > 0).values).reshape(-1, 1).float()
-        self.y_data = [torch.tensor(y.values, dtype=torch.float32) for y in getMatches(y_data, raw_features)]
-        self.opp_data = getMatches(opp_data, raw_features)[1]
-        # self.opp_data = torch.tensor(np.stack([self.opp_data.loc[:, :, idx[2], :].values for idx, row in self.opp_data.iterrows()]))
-
-        # self.opp_data = torch.tensor(np.stack([grp.values[-4:] for idx, grp in self.opp_data]))
-        kmd = opp_data[['t_ast', 't_score', 't_stl', 't_blk']]
-        self.kalman_measure_data = torch.tensor(kmd.values / np.array([50, 130, 40, 40]), dtype=torch.float32)
-        # self.kalman_measure_data = torch.tensor(np.stack([grp.values[-4:] for idx, grp in kmd]))
-        self.gids = (y_gids, opp_gids)
-        self.data_len = self.y_data[0].shape[1]
+        gids = prepFrame(pd.read_csv(Path(f'{datapath}/MRegularSeasonDetailedResults.csv')))
+        data = gids.loc[gids.index.get_level_values(1) == season] if is_val else gids.loc[
+            gids.index.get_level_values(1) != season]
+        data = data.loc[:, 2018:, :, :].reset_index().groupby(['season', 'tid']).nth(1)
+        self.labels = torch.tensor(
+            data[['t_score', 't_ast', 't_blk', 't_dr']].values / np.array([150, 50, 50, 60])).float()
+        self.data = data.reset_index()[['season', 'tid', 'oid']].values
+        self.data_len = 16
 
     def __getitem__(self, idx):
-        opp = torch.tensor(self.opp_data.loc[:, self.opp_data.iloc[idx].name[1], self.opp_data.iloc[idx].name[2], :].values, dtype=torch.float32)
-        return self.y_data[0][idx], opp, self.kalman_measure_data[idx], self.y_data[1][idx], self.labels[idx]
+        return (
+            torch.load(f'{self.datapath}/state_vectors/{self.data[idx, 0]}_{self.data[idx, 1]}.pt', weights_only=True),
+            torch.load(f'{self.datapath}/state_vectors/{self.data[idx, 0]}_{self.data[idx, 2]}.pt', weights_only=True),
+            self.labels[idx], self.data[idx])
 
     def __len__(self):
-        return self.y_data[0].shape[0]
+        return self.data.shape[0]
 
     def full_data(self):
         return self.data, self.labels
@@ -87,6 +72,7 @@ class GameDataModuleCV(LightningDataModule):
             datapath: str = './data',
             is_tourney: bool = False,
             season: int = 2023,
+            game_num: int = 0,
             **kwargs,
     ):
         super().__init__()
@@ -102,16 +88,17 @@ class GameDataModuleCV(LightningDataModule):
         self.datapath = datapath
         self.is_tourney = is_tourney
         self.season = season
+        self.game_num = game_num
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = GameDataset(self.datapath, season=self.season, is_tourney=self.is_tourney)
-        self.val_dataset = GameDataset(self.datapath, season=self.season, is_val=True, is_tourney=self.is_tourney)
+        self.train_dataset = GameDataset(self.datapath, season=self.season, game_num=self.game_num)
+        self.val_dataset = GameDataset(self.datapath, season=self.season, is_val=True)
 
     def changeSeason(self, season: int, is_tourney: bool = False) -> None:
         self.season = season
         self.is_tourney = is_tourney
-        self.train_dataset = GameDataset(self.datapath, season=self.season, is_tourney=self.is_tourney)
-        self.val_dataset = GameDataset(self.datapath, season=self.season, is_val=True, is_tourney=self.is_tourney)
+        self.train_dataset = GameDataset(self.datapath, season=self.season, game_num=self.game_num)
+        self.val_dataset = GameDataset(self.datapath, season=self.season, is_val=True)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

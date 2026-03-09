@@ -1,8 +1,8 @@
 load_data:
-  data_path: ./data
+  data_path: D:\madness_data\data
   init_elo_params: [0.3896076731384477, 6.51988202753904, 34.11927604457895, 0.17251109126016217]
   init_season: 2003
-  save_path: ./data  # This should usually be the same as the data_path
+  save_path: D:\madness_data\data  # This should usually be the same as the data_path
   save_files: True
   run_elo_opt: False
   run_rank_opt: False
@@ -11,7 +11,7 @@ prep_data:
   game_av: 5
 
 dataloader:
-  datapath: ./data
+  datapath: D:\madness_data\data
   train_batch_size: 1
   val_batch_size: 1
   split: .7
@@ -19,20 +19,40 @@ dataloader:
   single_example: False
   pin_memory: False
 
-model:
-  name: Predictor
+measure_model:
+  name: Measurement
   init_size: 128
   latent_size: 65
   sigma: 10.
-  lr: .0000001
+  lr: .00000001
   weight_decay: 0.5
   scheduler_gamma: .000000001
   betas: [.9, .99]
   num_samples: 100
+  resave_path: D:\madness_data\data
   training:
     log_dir: ./logs
     swa_start: .7
-    max_epochs: 10000
+    max_epochs: 1
+    log_epoch: 50
+    weights_path: ./models
+    warm_start: False
+    save_model: False
+    patience: 50
+
+model:
+  name: NeuralKF
+  init_size: 128
+  state_sz: 100
+  lr: .00000001
+  weight_decay: 0.5
+  scheduler_gamma: .000000001
+  betas: [.9, .99]
+  resave_path: D:\madness_data\data
+  training:
+    log_dir: ./logs
+    swa_start: .7
+    max_epochs: 1000
     log_epoch: 50
     weights_path: ./models
     warm_start: False
