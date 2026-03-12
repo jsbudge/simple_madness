@@ -16,20 +16,33 @@ class GameDataset(Dataset):
     def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, game_num: int = 0, seed: int = 7):
         # Load in data
         self.datapath = datapath
-        gids = prepFrame(pd.read_csv(Path(f'{datapath}/MRegularSeasonDetailedResults.csv')))
-        data = gids.loc[gids.index.get_level_values(1) == season] if is_val else gids.loc[gids.index.get_level_values(1) != season]
-        data = data.loc[:, 2018:, :, :].reset_index().groupby(['season', 'tid']).nth(game_num)
-        self.labels = torch.tensor(data[['t_score', 't_ast', 't_blk', 't_dr']].values / np.array([150, 50, 50, 60])).float()
-        self.data = data.reset_index()[['season', 'tid', 'oid']].values
-        self.data_len = 16
+        gids = pd.read_csv(Path(f'{datapath}/GameDataAdv.csv'))
+        raw_data = gids.loc[gids['season'] == season] if is_val else gids.loc[gids['season'] != season]
+        raw_data = raw_data.loc[raw_data['season'] > 2021]
+        mus = gids.mean()
+        stds = gids.std()
+        x_cols = ['t_score', 't_econ', 't_offrat', 't_defrat', 't_ts%']
+        x = []
+        u = []
+        y = []
+        ids = []
+        for idx, row in raw_data.groupby(['season', 'tid']):
+            x.append(((row[x_cols] - mus[x_cols]) / stds[x_cols]).values)
+            u.append(((row[['o_elo']] - mus['o_elo']) / stds['o_elo']).values)
+            y.append(((row[x_cols] - mus[x_cols]) / stds[x_cols]).values)
+            ids.append(idx)
+        self.x = x
+        self.u = u
+        self.y = y
+        self.ids = ids
+        self.data_len = len(x_cols)
 
     def __getitem__(self, idx):
-        return (torch.load(f'{self.datapath}/state_vectors/{self.data[idx, 0]}_{self.data[idx, 1]}.pt', weights_only=True),
-                torch.load(f'{self.datapath}/state_vectors/{self.data[idx, 0]}_{self.data[idx, 2]}.pt', weights_only=True),
-                self.labels[idx], self.data[idx])
+        return (torch.tensor(self.x[idx]).float(), torch.tensor(self.u[idx]).float(),
+                torch.tensor(self.y[idx]).float(), self.ids[idx])
 
     def __len__(self):
-        return self.data.shape[0]
+        return len(self.x)
 
     def full_data(self):
         return self.data, self.labels

@@ -66,30 +66,30 @@ class GatedTransition(nn.Module):
     def __init__(self, z_dim, u_dim, hid_dim):
         super(GatedTransition, self).__init__()
 
-        self.gate = nn.Sequential(nn.Linear(z_dim + u_dim, hid_dim),
-                                  nn.ReLU(),
+        self.gate = nn.Sequential(nn.Linear(z_dim, hid_dim),
+                                  nn.SiLU(),
                                   nn.Linear(hid_dim, z_dim),
                                   nn.Sigmoid())
 
-        self.proposed_mean = nn.Sequential(nn.Linear(z_dim + u_dim, hid_dim),
-                                           nn.ReLU(),
+        self.proposed_mean = nn.Sequential(nn.Linear(z_dim, hid_dim),
+                                           nn.SiLU(),
                                            nn.Linear(hid_dim, z_dim))
 
-        self.z_to_mu = nn.Linear(z_dim + u_dim, z_dim)
+        self.z_to_mu = nn.Linear(z_dim, z_dim)
         # modify the default initialization of z_to_mu
         # so that it starts out as the identity function
         self.z_to_mu.weight.data = torch.eye(z_dim)
         self.z_to_mu.bias.data = torch.zeros(z_dim)
 
         self.z_to_logvar = nn.Linear(z_dim, z_dim)
-        self.relu = nn.ReLU()
+        self.u_to_mu = nn.Linear(u_dim, z_dim)
+        self.relu = nn.SiLU()
 
     def forward(self, z_t_1, u=None):
-        u = u if u is not None else torch.zeros(z_t_1.size())
-        aug_z = torch.cat([z_t_1, u], dim=-1)
-        gate = self.gate(aug_z)
-        proposed_mean = self.proposed_mean(aug_z)
-        mu = (1 - gate) * self.z_to_mu(aug_z) + gate * proposed_mean
+        u = u if u is not None else torch.zeros(1)
+        gate = self.gate(z_t_1)
+        proposed_mean = self.proposed_mean(z_t_1) + self.u_to_mu(u)
+        mu = (1 - gate) * self.z_to_mu(z_t_1) + gate * proposed_mean
         logvar = self.z_to_logvar(self.relu(proposed_mean))
         # sampling
         eps = torch.randn(z_t_1.size())
@@ -129,7 +129,7 @@ class Emitter(nn.Module):
         self.hidden_to_hidden = nn.Linear(hid_dim, hid_dim)
         self.hidden_to_input_mu = nn.Linear(hid_dim, input_dim)
         self.logvar = nn.Parameter(torch.ones(input_dim))
-        self.relu = nn.ReLU()
+        self.relu = nn.SiLU()
 
     def forward(self, z_t):
         h1 = self.relu(self.z_to_hidden(z_t))

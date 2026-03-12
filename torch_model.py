@@ -10,193 +10,20 @@ from torch.nn import functional as tf
 from torch.distributions import MultivariateNormal
 from scipy.linalg import sqrtm
 
-
-class Measurement(LightningModule):
-
-    def __init__(self, init_size: int = 70, state_size: int = 100, meas_size: int = 4, lr: float = 1e-5, weight_decay: float = 0.0,
-                  scheduler_gamma: float = .7, betas: tuple[float, float] = (.9, .99), *args: Any, **kwargs: Any):
-        super().__init__()
-        self.save_hyperparameters()
-        self.automatic_optimization = False
-
-        self.embedding_function = nn.Sequential(
-            nn.Linear(init_size, state_size),
-            ParameterSinLU(),
-            nn.Linear(state_size, state_size),
-            nn.Tanh(),
-        )
-
-        self.measure_function = nn.Sequential(
-            nn.Linear(state_size * 2, state_size),
-            ParameterSinLU(),
-            nn.Linear(state_size, state_size),
-            GrowingCosine(),
-            nn.Linear(state_size, meas_size),
-            nn.Sigmoid()
-        )
-
-        _xavier_init(self)
-
-    def forward(self, x, y):
-        """
-
-        :param x: Team stats to encode.
-        :param y: This is the stats of the team in the tournament to run through predict_head
-        :return: probability of team x winning against team y.
-        """
-        return self.measure_function(torch.cat([x, y], dim=-1))
-
-    def training_forward(self, x, y):
-        x = self.embedding_function(x)
-        y = self.embedding_function(y)
-        return self.measure_function(torch.cat([x, y], dim=-1))
-
-    def loss_function(self, y, y_pred):
-        return tf.binary_cross_entropy(y, y_pred)
-
-    def on_fit_start(self) -> None:
-        if self.trainer.is_global_zero and self.logger:
-            self.logger.log_graph(self, self.example_input_array)
-
-    def training_step(self, batch, batch_idx):
-        opt = self.optimizers()
-        train_loss = self.train_val_get(batch, batch_idx)
-        opt.zero_grad()
-        self.manual_backward(train_loss, retain_graph=True)
-        opt.step()
-
-    def validation_step(self, batch, batch_idx):
-        self.train_val_get(batch, batch_idx, 'val')
-
-    def on_train_epoch_end(self) -> None:
-        sch = self.lr_schedulers()
-
-        # If the selected scheduler is a ReduceLROnPlateau scheduler.
-        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            sch.step(self.trainer.callback_metrics["val_loss"])
-        else:
-            sch.step()
-
-    def on_validation_epoch_end(self) -> None:
-        self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(),
-                                      lr=self.hparams.lr,
-                                      weight_decay=self.hparams.weight_decay,
-                                      betas=self.hparams.betas,
-                                      eps=1e-7)
-        if self.hparams.scheduler_gamma is None:
-            return optimizer
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=120, eta_min=self.hparams.scheduler_gamma)
-        '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
-                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)'''
-
-        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
-
-    def train_val_get(self, batch, batch_idx, kind='train'):
-        team, opp, targets, _ = batch
-
-        results = self.training_forward(team, opp)
-        train_loss = self.loss_function(results, targets)
-
-        self.log_dict({f'{kind}_loss': train_loss}, on_epoch=True,
-                      prog_bar=True, rank_zero_only=True)
-        return train_loss
-
-    def minimization(self, x, x_hat, y, targets):
-        results = self.training_forward(torch.tensor(np.concatenate((x_hat, x))), torch.tensor(y))
-        return self.loss_function(results, torch.tensor(targets)).data.numpy().flatten()
-
-
-class KalmanPropagator(LightningModule):
-    def __init__(self, nkf: LightningModule, lr: float = 1e-5, weight_decay: float = 0.0,
-                  scheduler_gamma: float = .7, betas: tuple[float, float] = (.9, .99), *args: Any, **kwargs: Any):
-        super().__init__()
-        self.save_hyperparameters()
-        self.automatic_optimization = False
-
-        self.nkf = nkf
-
-    def forward(self, x, u, z, dt = 1.):
-        """
-
-        :param x: Team stats to encode.
-        :param y: This is the stats of the team in the tournament to run through predict_head
-        :return: probability of team x winning against team y.
-        """
-        # for xh in x:
-        return self.nkf(x, u, z, dt)
-
-    def training_forward(self, x, y):
-        x = self.transition(x)
-        y = self.transition(y)
-        return self.measure(torch.cat([x, y]))
-
-    def loss_function(self, y, y_pred):
-        return tf.binary_cross_entropy(y, y_pred)
-
-    def on_fit_start(self) -> None:
-        if self.trainer.is_global_zero and self.logger:
-            self.logger.log_graph(self, self.example_input_array)
-
-    def training_step(self, batch, batch_idx):
-        opt = self.optimizers()
-        train_loss = self.train_val_get(batch, batch_idx)
-        opt.zero_grad()
-        self.manual_backward(train_loss, retain_graph=True)
-        opt.step()
-
-    def validation_step(self, batch, batch_idx):
-        self.train_val_get(batch, batch_idx, 'val')
-
-    def on_train_epoch_end(self) -> None:
-        sch = self.lr_schedulers()
-
-        # If the selected scheduler is a ReduceLROnPlateau scheduler.
-        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            sch.step(self.trainer.callback_metrics["val_loss"])
-        else:
-            sch.step()
-
-    def on_validation_epoch_end(self) -> None:
-        self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(),
-                                      lr=self.hparams.lr,
-                                      weight_decay=self.hparams.weight_decay,
-                                      betas=self.hparams.betas,
-                                      eps=1e-7)
-        if self.hparams.scheduler_gamma is None:
-            return optimizer
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=120, eta_min=self.hparams.scheduler_gamma)
-        '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
-                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)'''
-
-        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
-
-    def train_val_get(self, batch, batch_idx, kind='train'):
-        team, opp, targets = batch
-
-        results = self.training_forward(team, opp)
-        train_loss = self.loss_function(results, targets)
-
-        self.log_dict({f'{kind}_loss': train_loss}, on_epoch=True,
-                      prog_bar=True, rank_zero_only=True)
-        return train_loss
+from schedulers import CosineWarmupScheduler
 
 
 class DKF(LightningModule):
     # Structured Inference Networks
     # Current version ignores backward RNN outputs
-    def __init__(self, input_dim, z_dim=50, trans_dim=30, emission_dim=30,
-                 rnn_dim=100, num_rnn_layers=1, annealing_factor=.01) -> None:
+    def __init__(self, input_dim, z_dim=50, u_dim=2, trans_dim=30, emission_dim=30,
+                 rnn_dim=100, num_rnn_layers=1, annealing_factor=.01, *args, **kwargs) -> None:
 
         super().__init__()
         self.save_hyperparameters()
+        self.automatic_optimization = False
 
-        self.trans = GatedTransition(z_dim, trans_dim)
+        self.trans = GatedTransition(z_dim, u_dim, trans_dim)
         self.emitter = Emitter(z_dim, emission_dim, input_dim)
         self.combiner = Combiner(z_dim, rnn_dim)
 
@@ -220,7 +47,7 @@ class DKF(LightningModule):
         assert x.size() == y.size()
 
         batch_size, T_max, x_dim = x.size()
-        h_0 = self.h_0.expand(1, batch_size, self.rnn_dim).contiguous()
+        h_0 = self.h_0.expand(1, batch_size, self.hparams.rnn_dim).contiguous()
         rnn_out, h_n = self.rnn(x, h_0)
 
         # encode x which can contain missing values
@@ -230,7 +57,7 @@ class DKF(LightningModule):
 
         for t in range(T_max):
             # p(z_t|z_{t-1}, u{t})
-            z_prior, z_prior_mu, z_prior_logvar = self.trans(z_prev, u)
+            z_prior, z_prior_mu, z_prior_logvar = self.trans(z_prev, u[:, t])
             # q(z_t|z_{t-1},x_{t:T})
             z_t, z_mu, z_logvar = self.combiner(z_prev, rnn_out[:, t])
             # p(x_t|z_t)
@@ -262,7 +89,7 @@ class DKF(LightningModule):
         assert batch_size == 1
         z_prev = self.z_0.expand(num_sample, self.z_0.size(0))
 
-        h_0 = self.h_0.expand(1, 1, self.rnn_dim).contiguous()
+        h_0 = self.h_0.expand(1, 1, self.hparams.rnn_dim).contiguous()
         rnn_out, _ = self.rnn(x, h_0)
         rnn_out = rnn_out.expand(num_sample,
                                  rnn_out.size(1), rnn_out.size(2))
@@ -310,7 +137,7 @@ class DKF(LightningModule):
             x = deepcopy(x)
             x[:, -pred_steps:] = 0.
 
-        h_0 = self.h_0.expand(1, 1, self.rnn_dim).contiguous()
+        h_0 = self.h_0.expand(1, 1, self.hparams.rnn_dim).contiguous()
         rnn_out, _ = self.rnn(x[:, :T_max - pred_steps], h_0)
         rnn_out = rnn_out.expand(num_sample,
                                  rnn_out.size(1), rnn_out.size(2))
@@ -360,21 +187,16 @@ class DKF(LightningModule):
     def training_step(self, batch, batch_idx):
         opt = self.optimizers()
         train_loss = self.train_val_get(batch, batch_idx)
+        self.manual_backward(train_loss)
         opt.zero_grad()
-        self.manual_backward(train_loss, retain_graph=True)
+        self.lr_schedulers().step()
         opt.step()
 
     def validation_step(self, batch, batch_idx):
         self.train_val_get(batch, batch_idx, 'val')
 
     def on_train_epoch_end(self) -> None:
-        sch = self.lr_schedulers()
-
-        # If the selected scheduler is a ReduceLROnPlateau scheduler.
-        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            sch.step(self.trainer.callback_metrics["val_loss"])
-        else:
-            sch.step()
+        self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
 
     def on_validation_epoch_end(self) -> None:
         self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)
@@ -387,14 +209,12 @@ class DKF(LightningModule):
                                       eps=1e-7)
         if self.hparams.scheduler_gamma is None:
             return optimizer
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=120, eta_min=self.hparams.scheduler_gamma)
-        '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, cooldown=self.params['step_size'],
-                                                         factor=self.params['scheduler_gamma'], threshold=1e-5)'''
+        scheduler = CosineWarmupScheduler(optimizer, warmup=self.hparams.warmup, max_iters=self.hparams.max_iters)
 
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def train_val_get(self, batch, batch_idx, kind='train'):
-        x, u, y = batch
+        x, u, y, _ = batch
         rec_loss, kl_loss = self.infer(x, y, u)
         total_loss = rec_loss + self.hparams.annealing_factor * kl_loss
         # return rec_loss.item(), kl_loss.item(), total_loss.item()
