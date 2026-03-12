@@ -44,8 +44,8 @@ model:
   name: NeuralKF
   init_size: 128
   state_sz: 100
-  lr: .00000001
-  weight_decay: 0.5
+  lr: .000001
+  weight_decay: 0.05
   scheduler_gamma: .000000001
   betas: [.9, .99]
   resave_path: D:\madness_data\data

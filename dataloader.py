@@ -34,6 +34,12 @@ class GameDataset(Dataset):
     def full_data(self):
         return self.data, self.labels
 
+    def get_state_path(self, d):
+        return f'{self.datapath}/state_vectors/{d[0]}_{d[1]}.pt'
+
+    def get_state(self, d):
+        torch.load(f'{self.datapath}/state_vectors/{d[0]}_{d[1]}.pt', weights_only=True)
+
 
 class KalmanDataset(Dataset):
     def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, seed: int = 7):

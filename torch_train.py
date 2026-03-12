@@ -51,13 +51,13 @@ if __name__ == '__main__':
                                  label.data.numpy().flatten()))
             torch.save(torch.tensor(np.concatenate((x[0, :6].data.numpy(), min_eval['x'])), dtype=torch.float32),
                        Path(f'{config["load_data"]["save_path"]}/state_vectors/{dt[0, 0]}_{dt[0, 1]}.pt'))
-        threads = [threading.Thread(target=min_save, args=d) for d in data.train_dataloader()]
+        '''threads = [threading.Thread(target=min_save, args=d) for d in data.train_dataloader()]
         threads += [threading.Thread(target=min_save, args=d) for d in data.val_dataloader()]
         for thread in threads:
             thread.start()
         for thread in tqdm(threads):
-            thread.join()
-        '''for x, y, label, dt in tqdm(data.train_dataloader()):
+            thread.join()'''
+        for x, y, label, dt in tqdm(data.train_dataloader()):
             min_eval = minimize(model.minimization, x[0, 6:].data.numpy(),
                                 (x[0, :6].data.numpy(), y.data.numpy().flatten(),
                                  label.data.numpy().flatten()))
@@ -68,7 +68,7 @@ if __name__ == '__main__':
                                 (x[0, :6].data.numpy(), y.data.numpy().flatten(),
                                  label.data.numpy().flatten()))
             torch.save(torch.tensor(np.concatenate((x[0, :6].data.numpy(), min_eval['x'])), dtype=torch.float32),
-                       Path(f'{config["load_data"]["save_path"]}/state_vectors/{dt[0, 0]}_{dt[0, 1]}.pt'))'''
+                       Path(f'{config["load_data"]["save_path"]}/state_vectors/{dt[0, 0]}_{dt[0, 1]}.pt'))
 
     if config['measure_model']['training']['save_model']:
         trainer.save_checkpoint(f"{config['measure_model']['training']['weights_path']}/{mdl_name}.ckpt")
