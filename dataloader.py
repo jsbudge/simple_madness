@@ -22,18 +22,23 @@ class GameDataset(Dataset):
         mus = gids.mean()
         stds = gids.std()
         x_cols = ['t_score', 't_econ', 't_offrat', 't_defrat', 't_ts%']
+        u_cols = ['o_elo', 'o_offrat', 'o_defrat']
         x = []
         u = []
         y = []
         ids = []
         for idx, row in raw_data.groupby(['season', 'tid']):
             x.append(((row[x_cols] - mus[x_cols]) / stds[x_cols]).values)
-            u.append(((row[['o_elo']] - mus['o_elo']) / stds['o_elo']).values)
+            u.append(((row[u_cols] - mus[u_cols]) / stds[u_cols]).values)
             y.append(((row[x_cols] - mus[x_cols]) / stds[x_cols]).values)
             ids.append(idx)
         self.x = x
         self.u = u
         self.y = y
+        self.mus = mus
+        self.stds = stds
+        self.x_cols = x_cols
+        self.u_cols = u_cols
         self.ids = ids
         self.data_len = len(x_cols)
 

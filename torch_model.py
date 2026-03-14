@@ -16,28 +16,33 @@ from schedulers import CosineWarmupScheduler
 class DKF(LightningModule):
     # Structured Inference Networks
     # Current version ignores backward RNN outputs
-    def __init__(self, input_dim, z_dim=50, u_dim=2, trans_dim=30, emission_dim=30,
-                 rnn_dim=100, num_rnn_layers=1, annealing_factor=.01, *args, **kwargs) -> None:
+    def __init__(self, x_dim, z_dim=50, u_dim=2, trans_dim=30, emission_dim=30,
+                 rnn_dim=100, num_rnn_layers=1, alpha: float = 1.1, k_param: int = 0, annealing_factor=.01, *args, **kwargs) -> None:
 
         super().__init__()
         self.save_hyperparameters()
         self.automatic_optimization = False
 
         self.trans = GatedTransition(z_dim, u_dim, trans_dim)
-        self.emitter = Emitter(z_dim, emission_dim, input_dim)
-        self.combiner = Combiner(z_dim, rnn_dim)
+        self.emitter = Emitter(z_dim, emission_dim, x_dim)
+        self.combiner = Combiner(z_dim, u_dim, rnn_dim)
 
-        self.z_0 = nn.Parameter(torch.zeros(z_dim))
-        self.z_q_0 = nn.Parameter(torch.zeros(z_dim))
-        self.h_0 = nn.Parameter(torch.zeros(1, 1, rnn_dim))
+        self.z_0 = nn.Parameter(torch.zeros(z_dim), requires_grad=False)
+        self.z_q_0 = nn.Parameter(torch.zeros(z_dim), requires_grad=False)
+        self.h_0 = nn.Parameter(torch.zeros(1, 1, rnn_dim), requires_grad=False)
+
+        self.emitter_log_sigma = nn.Parameter(torch.ones(x_dim))
+        self._lambda = alpha ** 2 * (z_dim + k_param) - z_dim
+        self.mean_weights = torch.tensor(np.array([(self._lambda / (z_dim + self._lambda))
+                                                   if i == 0 else 1 / (2 * (z_dim + self._lambda)) for i in
+                                                   range(2 * z_dim + 1)]), dtype=torch.float32, requires_grad=False)
 
         # corresponding learning 'l' in the original code
         # latent state transition matrix substitute
-        self.rnn = nn.RNN(input_size=input_dim,
+        self.rnn = nn.LSTM(input_size=x_dim,
                           hidden_size=rnn_dim,
-                          nonlinearity="relu",
                           batch_first=True,
-                          bidirectional=False,
+                          bidirectional=True,
                           num_layers=num_rnn_layers)
 
         self.kldiv = KLDivProb()
@@ -47,8 +52,8 @@ class DKF(LightningModule):
         assert x.size() == y.size()
 
         batch_size, T_max, x_dim = x.size()
-        h_0 = self.h_0.expand(1, batch_size, self.hparams.rnn_dim).contiguous()
-        rnn_out, h_n = self.rnn(x, h_0)
+        h_0 = self.h_0.expand(2, batch_size, self.hparams.rnn_dim).contiguous()
+        rnn_out, _ = self.rnn(x, (h_0, h_0))
 
         # encode x which can contain missing values
         z_prev = self.z_q_0.expand(batch_size, self.z_q_0.size(0))
@@ -57,11 +62,17 @@ class DKF(LightningModule):
 
         for t in range(T_max):
             # p(z_t|z_{t-1}, u{t})
-            z_prior, z_prior_mu, z_prior_logvar = self.trans(z_prev, u[:, t])
+            z_prior_mu, z_prior_logvar = self.trans(z_prev, u[:, t])
             # q(z_t|z_{t-1},x_{t:T})
-            z_t, z_mu, z_logvar = self.combiner(z_prev, rnn_out[:, t])
+            z_mu, z_logvar = self.combiner(z_prev, rnn_out[:, t], u[:, t])
+
+            # sample z distribution using cholesky
+            sig_pts = self.get_sigmas(z_mu,
+                                      torch.diag_embed(torch.sqrt(torch.exp(.5 * z_logvar)),
+                                                       offset=0, dim1=-2, dim2=-1))
+            z_t = torch.mean(sig_pts * self.mean_weights[None, :, None], dim=-2)
             # p(x_t|z_t)
-            x_t, x_mu, x_logvar = self.emitter(z_t)
+            x_t = torch.mean(self.emitter(sig_pts) * self.mean_weights[None, :, None], dim=-2)
 
             # compute loss
             kl_states[:, t] = self.kldiv(
@@ -120,7 +131,7 @@ class DKF(LightningModule):
 
         return x_hat, x_025, x_975
 
-    def predict(self, x, pred_steps=1, num_sample=100, step_by_step=True):
+    def predict(self, x, u, pred_steps=1, num_sample=100, step_by_step=True):
         """ x should contain the prediction period
         """
         # Outputs
@@ -144,7 +155,7 @@ class DKF(LightningModule):
 
         for t in range(T_max - pred_steps):
             # z_t: (num_sample, z_dim)
-            z_t, z_mu, _ = self.combiner(z_prev, rnn_out[:, t])
+            z_t, z_mu, _ = self.combiner(z_prev, rnn_out[:, t], u[:, t])
             _, x_mu, x_logvar = self.emitter(z_t)
 
             x_covar = torch.diag(torch.sqrt(torch.exp(.5 * x_logvar)))
@@ -162,8 +173,8 @@ class DKF(LightningModule):
             rnn_out, _ = self.rnn(x[:, :t], h_0)
             rnn_out = rnn_out.expand(num_sample, rnn_out.size(1), rnn_out.size(2))
 
-            z_t_1, z_mu, _ = self.combiner(z_prev, rnn_out[:, -1])
-            z_t, z_mu, _ = self.trans(z_t_1)
+            z_t_1, z_mu, _ = self.combiner(z_prev, rnn_out[:, -1], u[:, t])
+            z_t, z_mu, _ = self.trans(z_t_1, u[:, t])
             _, x_mu, x_logvar = self.emitter(z_t)
 
             if not step_by_step:
@@ -179,6 +190,19 @@ class DKF(LightningModule):
             x_975[:, t] = x_samples.quantile(0.975, 0)
 
         return x_hat, x_025, x_975
+
+    def get_sigmas(self, z, p):
+        """generates sigma points"""
+
+        tmp_mat = (self.hparams.z_dim + self._lambda) * p
+
+        # print spr_mat
+        spr_mat, _ = torch.linalg.cholesky_ex(tmp_mat)
+
+        ret = torch.cat([z.unsqueeze(-2), z - tmp_mat, z + tmp_mat], dim=-2)
+        # ret = x.repeat(self.n_sigmas, 1)
+
+        return ret
 
     def on_fit_start(self) -> None:
         if self.trainer.is_global_zero and self.logger:

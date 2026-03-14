@@ -5,6 +5,7 @@ from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 from dataloader import GameDataModuleCV
 from torch_model import DKF
 import numpy as np
+from utils.dataframe_utils import prepFrame, getMatches, date_weight
 from tqdm import tqdm
 import itertools
 import yaml
@@ -48,5 +49,20 @@ if __name__ == '__main__':
     model.eval()
     if config['model']['training']['save_model']:
         trainer.save_checkpoint(f"{config['model']['training']['weights_path']}/{mdl_name}.ckpt")
+
+    tdata = pd.read_csv(f'{data.train_dataset.datapath}/GameDataAdv.csv').set_index(['gid', 'season', 'tid', 'oid']).loc[:, 2021:, :, :]
+    gdata = pd.read_csv(f'{data.train_dataset.datapath}/GameDataBasic.csv').set_index(['gid', 'season', 'tid', 'oid']).loc[:, 2021:, :, :]
+    tdata_av = date_weight(tdata, gdata)
+    gids = prepFrame(pd.read_csv(f'{data.train_dataset.datapath}/MNCAATourneyCompactResults.csv')).loc[:, 2021:, :, :]
+
+    matches = getMatches(gids, tdata_av)
+    x = (matches[0][data.train_dataset.x_cols] - data.train_dataset.mus[data.train_dataset.x_cols]) / data.train_dataset.std[data.train_dataset.x_cols]
+    u = (matches[1][data.train_dataset.u_cols] - data.train_dataset.mus[data.train_dataset.u_cols]) / data.train_dataset.std[data.train_dataset.u_cols]
+
+    model.predict()
+
+
+
+
 
 

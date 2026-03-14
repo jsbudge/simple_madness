@@ -81,61 +81,73 @@ class GatedTransition(nn.Module):
         self.z_to_mu.weight.data = torch.eye(z_dim)
         self.z_to_mu.bias.data = torch.zeros(z_dim)
 
-        self.z_to_logvar = nn.Linear(z_dim, z_dim)
-        self.u_to_mu = nn.Linear(u_dim, z_dim)
-        self.relu = nn.SiLU()
+        self.z_to_logvar = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(z_dim, z_dim),
+            nn.Softplus()
+        )
+
+        self.u_to_mu = nn.Sequential(
+            nn.Linear(u_dim, z_dim),
+            nn.SiLU(),
+            nn.Linear(z_dim, z_dim),
+        )
 
     def forward(self, z_t_1, u=None):
         u = u if u is not None else torch.zeros(1)
         gate = self.gate(z_t_1)
         proposed_mean = self.proposed_mean(z_t_1) + self.u_to_mu(u)
         mu = (1 - gate) * self.z_to_mu(z_t_1) + gate * proposed_mean
-        logvar = self.z_to_logvar(self.relu(proposed_mean))
-        # sampling
-        eps = torch.randn(z_t_1.size())
-        z_t = mu + eps * torch.exp(.5 * logvar)
-        return z_t, mu, logvar
+        logvar = self.z_to_logvar(proposed_mean)
+        return mu, logvar
 
 
 class Combiner(nn.Module):
     # PostNet
-    def __init__(self, z_dim, hid_dim):
+    def __init__(self, z_dim, u_dim, hid_dim):
         super(Combiner, self).__init__()
         self.z_dim = z_dim
+        self.hid_dim = hid_dim
         self.z_to_hidden = nn.Linear(z_dim, hid_dim)
         self.hidden_to_mu = nn.Linear(hid_dim, z_dim)
-        self.hidden_to_logvar = nn.Linear(hid_dim, z_dim)
+        self.u_to_mu = nn.Linear(u_dim, z_dim)
+        self.hidden_to_logvar = nn.Sequential(
+            nn.Linear(hid_dim, z_dim),
+            nn.Softplus()
+        )
         self.tanh = nn.Tanh()
 
-    def forward(self, z_t_1, h_rnn):
+    def forward(self, z_t_1, h_rnn, u):
         # combine the rnn hidden state with a transformed version of z_t_1
-        h_combined = 0.5 * (self.tanh(self.z_to_hidden(z_t_1)) + h_rnn)
+        h_combined = 0.3333333333333333333 * (self.tanh(self.z_to_hidden(z_t_1)) +
+                                              h_rnn[..., :self.hid_dim] + h_rnn[..., -self.hid_dim:])
         # use the combined hidden state
         # to compute the mean used to sample z_t
-        mu = self.hidden_to_mu(h_combined)
+        mu = self.hidden_to_mu(h_combined) + self.u_to_mu(u)
         # use the combined hidden state
         # to compute the scale used to sample z_t
         logvar = self.hidden_to_logvar(h_combined)
-        eps = torch.randn(z_t_1.size())
-        z_t = mu + eps * torch.exp(.5 * logvar)
-        return z_t, mu, logvar
+        return mu, logvar
 
 
 class Emitter(nn.Module):
+    """
+    Parametrizes F_k, the distribution used to sample output values of x given
+    state z.
+    """
     def __init__(self, z_dim, hid_dim, input_dim) -> None:
         super().__init__()
         self.input_dim = input_dim
-        self.z_to_hidden = nn.Linear(z_dim, hid_dim)
-        self.hidden_to_hidden = nn.Linear(hid_dim, hid_dim)
-        self.hidden_to_input_mu = nn.Linear(hid_dim, input_dim)
-        self.logvar = nn.Parameter(torch.ones(input_dim))
+        self.z_to_x = nn.Sequential(
+            nn.Linear(z_dim, hid_dim),
+            nn.SiLU(),
+            nn.Linear(hid_dim, hid_dim),
+            nn.SiLU(),
+            nn.Linear(hid_dim, input_dim),
+        )
         self.relu = nn.SiLU()
+        self.softmax = nn.Softmax()
 
     def forward(self, z_t):
-        h1 = self.relu(self.z_to_hidden(z_t))
-        h2 = self.relu(self.hidden_to_hidden(h1))
-        mu = self.hidden_to_input_mu(h2)
-        # return mu  # x_t
-        eps = torch.randn(z_t.size(0), self.input_dim)
-        x_t = mu + eps * torch.exp(.5 * self.logvar)
-        return x_t, mu, self.logvar
+        mu = self.z_to_x(z_t)
+        return mu

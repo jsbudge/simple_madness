@@ -42,18 +42,19 @@ measure_model:
 
 model:
   name: DKF
-  input_dim: 5
-  z_dim: 50
-  u_dim: 1
-  trans_dim: 30
-  emission_dim: 30
-  rnn_dim: 100
+  x_dim: 5
+  z_dim: 30
+  u_dim: 3
+  z0_dim: 6
+  trans_dim: 100
+  emission_dim: 100
+  rnn_dim: 200
   num_rnn_layers: 1
   annealing_factor: .01
-  warmup: 150
-  max_iters: 10000
-  lr: .00001
-  weight_decay: 0.05
+  warmup: 1500
+  max_iters: 1000000
+  lr: .01
+  weight_decay: 0.00001
   scheduler_gamma: .000000001
   betas: [.9, .99]
   resave_path: D:\madness_data\data
