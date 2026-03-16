@@ -3,10 +3,11 @@ from pathlib import Path
 import pandas as pd
 import yaml
 from bracket import generateBracket, applyResultsToBracket, scoreBracket
-from utils.dataframe_utils import prepFrame, getMatches, getPossMatches
+from utils.dataframe_utils import prepFrame, getMatches, getPossMatches, normalize, date_weight
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import RFECV
 from utils.sklearn_utils import LegendreScalarPolynomialFeatures, get_legendre_pipeline, SeasonalSplit
+from sklearn.decomposition import TruncatedSVD
 
 with open('./run_params.yaml', 'r') as file:
     try:
@@ -15,7 +16,14 @@ with open('./run_params.yaml', 'r') as file:
         print(exc)
 
 datapath = config['dataloader']['datapath']
-features = pd.read_csv(Path(f'{datapath}/NormalizedEloAverages.csv')).set_index(['tid', 'season'])
+ncomp = 140
+features = pd.read_csv(Path(f'{datapath}/GameDataAdv.csv')).set_index(['gid', 'season', 'tid', 'oid'])
+avf = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
+bids = pd.read_csv(Path(f'{datapath}/GameDataBasic.csv')).set_index(['gid', 'season', 'tid', 'oid'])
+features = date_weight(features, bids).join(avf, lsuffix='_d', rsuffix='_a')
+svd = TruncatedSVD(n_components=ncomp)
+features = normalize(pd.DataFrame(data=svd.fit_transform(features), index=features.index, columns=[f't_{col}' for col in range(ncomp)]))
+
 tids = pd.read_csv(Path(f'{datapath}/MNCAATourneyCompactResults.csv'))
 tids = prepFrame(tids)
 gids = prepFrame(pd.read_csv(Path(f'{datapath}/MRegularSeasonCompactResults.csv')))
@@ -54,11 +62,11 @@ for degree in range(2, 9):
             print(f'Running seasonal split for {season}.')
             truth_br = generateBracket(season, True, datapath=datapath)
             test_br = generateBracket(season, True, datapath=datapath)
-            ps = getPossMatches(nfeats.loc[nfeats.index.get_level_values(1) == season], season, diff=True, datapath=datapath)
+            ps = getPossMatches(nfeats.loc[nfeats.index.get_level_values(0) == season], season, diff=True, datapath=datapath)
             rfc_results = pd.DataFrame(index=ps.index, columns=['Res', 'res1'], data=rfc.predict_proba(ps))
             res = []
-            for _ in range(500):
-                test_br = applyResultsToBracket(test_br, rfc_results, select_random=True, random_limit=.1)
+            for _ in range(100):
+                test_br = applyResultsToBracket(test_br, rfc_results, select_random=True, random_limit=.25)
                 res.append(scoreBracket(test_br, truth_br))
             print(f'Average score of {np.mean(res)} with STD of {np.std(res)}.')
             total_res.append(np.mean(res))

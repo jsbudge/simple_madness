@@ -144,7 +144,7 @@ class Bracket(object):
     def __getitem__(self, nd_id):
         return self.node_dict[nd_id]
 
-    def __str__(self, datapath = "D:\\\\madness_data\\data"):
+    def __str__(self, datapath = "./data"):
         tnames = loadTeamNames(datapath)
         rstr = ''
         for pre, fill, node in RenderTree(self.root, style=AsciiStyle()):

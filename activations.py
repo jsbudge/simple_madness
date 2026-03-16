@@ -72,7 +72,7 @@ class GatedTransition(nn.Module):
                                   nn.Sigmoid())
 
         self.proposed_mean = nn.Sequential(nn.Linear(z_dim, hid_dim),
-                                           nn.SiLU(),
+                                           nn.LeakyReLU(),
                                            nn.Linear(hid_dim, z_dim))
 
         self.z_to_mu = nn.Linear(z_dim, z_dim)
@@ -115,7 +115,7 @@ class Combiner(nn.Module):
             nn.Linear(hid_dim, z_dim),
             nn.Softplus()
         )
-        self.tanh = nn.Tanh()
+        self.tanh = nn.Softsign()
 
     def forward(self, z_t_1, h_rnn, u):
         # combine the rnn hidden state with a transformed version of z_t_1
@@ -142,11 +142,10 @@ class Emitter(nn.Module):
             nn.Linear(z_dim, hid_dim),
             nn.SiLU(),
             nn.Linear(hid_dim, hid_dim),
+            nn.Dropout(.1),
             nn.SiLU(),
             nn.Linear(hid_dim, input_dim),
         )
-        self.relu = nn.SiLU()
-        self.softmax = nn.Softmax()
 
     def forward(self, z_t):
         mu = self.z_to_x(z_t)

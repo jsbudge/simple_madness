@@ -8,7 +8,7 @@ from pathlib import Path
 from glob import glob
 import numpy as np
 import pandas as pd
-from utils.dataframe_utils import prepFrame, getMatches
+from utils.dataframe_utils import prepFrame, getMatches, date_weight, normalize
 from utils.sklearn_utils import SeasonalSplit, get_legendre_pipeline
 
 
@@ -16,35 +16,32 @@ class GameDataset(Dataset):
     def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, game_num: int = 0, seed: int = 7):
         # Load in data
         self.datapath = datapath
-        gids = pd.read_csv(Path(f'{datapath}/GameDataAdv.csv'))
-        raw_data = gids.loc[gids['season'] == season] if is_val else gids.loc[gids['season'] != season]
-        raw_data = raw_data.loc[raw_data['season'] > 2021]
-        mus = gids.mean()
-        stds = gids.std()
-        x_cols = ['t_score', 't_econ', 't_offrat', 't_defrat', 't_ts%']
-        u_cols = ['o_elo', 'o_offrat', 'o_defrat']
+        raw_data = pd.read_csv(Path(f'{datapath}/kalman_data.csv'))
+        raw_data = raw_data.loc[raw_data['season'] == season] if is_val else raw_data.loc[raw_data['season'] != season]
+        raw_data = raw_data.loc[raw_data['season'] != 2021]
+        self.min_size = raw_data.groupby(['season', 'tid']).count().min().values[0]
+        x_cols = [col for col in raw_data.columns if 't_' in col]
+        u_cols = [col for col in raw_data.columns if 'o_' in col]
         x = []
         u = []
         y = []
         ids = []
         for idx, row in raw_data.groupby(['season', 'tid']):
-            x.append(((row[x_cols] - mus[x_cols]) / stds[x_cols]).values)
-            u.append(((row[u_cols] - mus[u_cols]) / stds[u_cols]).values)
-            y.append(((row[x_cols] - mus[x_cols]) / stds[x_cols]).values)
+            x.append(row[x_cols].values)
+            u.append(row[u_cols].values)
+            y.append(row[x_cols].values)
             ids.append(idx)
         self.x = x
         self.u = u
         self.y = y
-        self.mus = mus
-        self.stds = stds
         self.x_cols = x_cols
         self.u_cols = u_cols
         self.ids = ids
         self.data_len = len(x_cols)
 
     def __getitem__(self, idx):
-        return (torch.tensor(self.x[idx]).float(), torch.tensor(self.u[idx]).float(),
-                torch.tensor(self.y[idx]).float(), self.ids[idx])
+        return (torch.tensor(self.x[idx]).float()[:self.min_size], torch.tensor(self.u[idx]).float()[:self.min_size],
+                torch.tensor(self.y[idx]).float()[:self.min_size], self.ids[idx])
 
     def __len__(self):
         return len(self.x)
@@ -52,8 +49,9 @@ class GameDataset(Dataset):
     def full_data(self):
         return self.data, self.labels
 
-    def get_state_path(self, d):
-        return f'{self.datapath}/state_vectors/{d[0]}_{d[1]}.pt'
+    def get_team(self, d):
+        loc = np.where([i == d for i in self.ids])[0].item()
+        return torch.tensor(self.x[loc]).float(), torch.tensor(self.u[loc]).float(), torch.tensor(self.y[loc]).float()
 
     def get_state(self, d):
         torch.load(f'{self.datapath}/state_vectors/{d[0]}_{d[1]}.pt', weights_only=True)
@@ -63,26 +61,24 @@ class KalmanDataset(Dataset):
     def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, seed: int = 7):
         # Load in data
         self.datapath = datapath
-        gids = prepFrame(pd.read_csv(Path(f'{datapath}/MRegularSeasonDetailedResults.csv')))
+        gids = pd.read_csv(Path(f'{datapath}/GameDataAdv.csv')).set_index(['gid', 'season', 'tid', 'oid'])
+        bids = pd.read_csv(Path(f'{datapath}/GameDataBasic.csv')).set_index(['gid', 'season', 'tid', 'oid'])
+        avs = normalize(date_weight(gids, bids))
         data = gids.loc[gids.index.get_level_values(1) == season] if is_val else gids.loc[
             gids.index.get_level_values(1) != season]
-        data = data.loc[:, 2018:, :, :].reset_index().groupby(['season', 'tid']).nth(1)
-        self.labels = torch.tensor(
-            data[['t_score', 't_ast', 't_blk', 't_dr']].values / np.array([150, 50, 50, 60])).float()
-        self.data = data.reset_index()[['season', 'tid', 'oid']].values
-        self.data_len = 16
+        data = data.loc[:, 2011:, :, :]
+        d0, d1 = getMatches(data, avs)
+        home = bids.loc[data.index, ['gloc']].values
+        self.labels = torch.tensor((data[['t_mov']].values > 0).astype(float)).float()
+        self.d0 = torch.tensor(d0.values).float()
+        self.d1 = torch.tensor(d1.values).float()
+        self.home = torch.tensor(home).float()
 
     def __getitem__(self, idx):
-        return (
-            torch.load(f'{self.datapath}/state_vectors/{self.data[idx, 0]}_{self.data[idx, 1]}.pt', weights_only=True),
-            torch.load(f'{self.datapath}/state_vectors/{self.data[idx, 0]}_{self.data[idx, 2]}.pt', weights_only=True),
-            self.labels[idx], self.data[idx])
+        return self.d0[idx], self.d1[idx], self.home[idx], self.labels[idx]
 
     def __len__(self):
-        return self.data.shape[0]
-
-    def full_data(self):
-        return self.data, self.labels
+        return self.d0.shape[0]
 
 
 class GameDataModuleCV(LightningDataModule):

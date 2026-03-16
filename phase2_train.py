@@ -5,7 +5,7 @@ from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 from dataloader import GameDataModuleCV
 from torch_model import DKF
 import numpy as np
-from utils.dataframe_utils import prepFrame, getMatches, date_weight
+from utils.dataframe_utils import prepFrame, getMatches, date_weight, normalize, getPossMatches
 from tqdm import tqdm
 import itertools
 import yaml
@@ -45,21 +45,53 @@ if __name__ == '__main__':
                        StochasticWeightAveraging(swa_lrs=expected_lr,
                                                  swa_epoch_start=config['model']['training']['swa_start']),
                        ModelCheckpoint(monitor='train_total_loss')])
-    trainer.fit(model, datamodule=data)
+    try:
+        trainer.fit(model, datamodule=data)
+    except KeyboardInterrupt:
+        print('Training interrupted by user.')
     model.eval()
     if config['model']['training']['save_model']:
         trainer.save_checkpoint(f"{config['model']['training']['weights_path']}/{mdl_name}.ckpt")
 
-    tdata = pd.read_csv(f'{data.train_dataset.datapath}/GameDataAdv.csv').set_index(['gid', 'season', 'tid', 'oid']).loc[:, 2021:, :, :]
-    gdata = pd.read_csv(f'{data.train_dataset.datapath}/GameDataBasic.csv').set_index(['gid', 'season', 'tid', 'oid']).loc[:, 2021:, :, :]
-    tdata_av = date_weight(tdata, gdata)
-    gids = prepFrame(pd.read_csv(f'{data.train_dataset.datapath}/MNCAATourneyCompactResults.csv')).loc[:, 2021:, :, :]
+    game_sets = {}
+    elo_data = pd.read_csv(Path(f'{data.train_dataset.datapath}/GameDataAdv.csv')).groupby(['season', 'tid']).last()[['t_elo']]
+    raw_data = pd.read_csv(Path(f'{data.train_dataset.datapath}/kalman_data.csv')).drop(columns=['tid']).rename(columns={'oid': 'tid'}).groupby(['season', 'tid']).first()
+    raw_data = raw_data[[col for col in raw_data.columns if 'o_' in col]]
+    raw_data['o_elo'] = (elo_data.loc[raw_data.index, 't_elo'] - elo_data['t_elo'].mean()) / elo_data['t_elo'].std()
+    raw_data['o_gloc'] = 0
 
-    matches = getMatches(gids, tdata_av)
-    x = (matches[0][data.train_dataset.x_cols] - data.train_dataset.mus[data.train_dataset.x_cols]) / data.train_dataset.std[data.train_dataset.x_cols]
-    u = (matches[1][data.train_dataset.u_cols] - data.train_dataset.mus[data.train_dataset.u_cols]) / data.train_dataset.std[data.train_dataset.u_cols]
+    _, u_data = getPossMatches(raw_data, 2023, use_seed=True, datapath=data.train_dataset.datapath)
+    results = pd.DataFrame(index=u_data.index, columns=['txh', 'txh_o', 'txmin', 'txmin_o', 'txmax', 'txmax_o', 'oxh',
+                                                        'oxh_t', 'oxmin', 'oxmin_t', 'oxmax', 'oxmax_t'])
+    for idx, row in tqdm(u_data.iterrows()):
+        # tid results
+        x, u, y = data.val_dataset.get_team((idx[1], idx[2]))
+        x = torch.cat([x, torch.zeros(1, 2)], dim=0).unsqueeze(0).float()
+        u = torch.cat([u, torch.tensor(u_data.loc[idx].values).unsqueeze(0)], dim=0).unsqueeze(0).float()
+        txh, txmin, txmax = model.predict(x, u)
+        results.loc[idx, ['txh', 'txh_o', 'txmin', 'txmin_o', 'txmax', 'txmax_o']] = \
+            [txh[0, -1, 0].data.numpy(), txmin[0, -1, 0].data.numpy(), txmax[0, -1, 0].data.numpy(),
+             txh[0, -1, 1].data.numpy(), txmin[0, -1, 1].data.numpy(), txmax[0, -1, 1].data.numpy()]
 
-    model.predict()
+        # oid results
+        x, u, y = data.val_dataset.get_team((idx[1], idx[3]))
+        x = torch.cat([x, torch.zeros(1, 2)], dim=0).unsqueeze(0).float()
+        u = torch.cat([u, torch.tensor(u_data.loc[idx].values).unsqueeze(0)], dim=0).unsqueeze(0).float()
+        oxh, oxmin, oxmax = model.predict(x, u)
+        results.loc[idx, ['oxh', 'oxh_t', 'oxmin', 'oxmin_t', 'oxmax', 'oxmax_t']] = \
+            [oxh[0, -1, 0].data.numpy(), oxmin[0, -1, 0].data.numpy(), oxmax[0, -1, 0].data.numpy(),
+             oxh[0, -1, 1].data.numpy(), oxmin[0, -1, 1].data.numpy(), oxmax[0, -1, 1].data.numpy()]
+
+    from bracket import generateBracket, applyResultsToBracket, scoreBracket
+    from scipy.special import erf
+
+    truth_br = generateBracket(2023, True, datapath=data.train_dataset.datapath)
+    test_br = generateBracket(2023, True, datapath=data.train_dataset.datapath)
+    rfc_results = pd.DataFrame(index=u_data.index, columns=['Res'], data=1 - .5 * (1 + erf((-(results['txh'].values - results['oxh'].values).astype(float)) / (.2 * np.sqrt(2)))))
+    res = []
+    for _ in range(100):
+        test_br = applyResultsToBracket(test_br, rfc_results, select_random=True, random_limit=1.)
+        print(f'Final score of {scoreBracket(test_br, truth_br)}')
 
 
 

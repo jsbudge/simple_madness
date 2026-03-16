@@ -70,22 +70,22 @@ def getPossMatches(team_feats, season, diff=False, use_seed=True, datapath=None,
     """
     if use_seed:
         sd = pd.read_csv(f'{datapath}/{gender}NCAATourneySeeds.csv')
+        sd = sd.loc[sd['Season'] == season][['TeamID']].values.flatten()
     else:
         sd = pd.read_csv(f'{datapath}/{gender}RegularSeasonCompactResults.csv')
-    sd = sd.loc[sd['Season'] == season]['TeamID'].values
+        sd = sd.loc[sd['Season'] == season][['WTeamID', 'LTeamID']].values.flatten()
     teams = list(set(sd))
     matches = [[x, y] for (x, y) in permutations(teams, 2)]
-    poss_games = pd.DataFrame(data=matches, columns=['tid', 'oid'])
-    poss_games['season'] = season
-    poss_games['gid'] = np.arange(poss_games.shape[0])
-    gsc = poss_games.set_index(['gid', 'season'])
-    g1 = gsc.merge(team_feats, left_on=['tid', 'season'],
-                   right_on=['tid', 'season'], right_index=True).sort_index()
-    g1 = g1.reset_index().set_index(['gid', 'season', 'tid', 'oid'])
-    g2 = gsc.merge(team_feats, left_on=['oid', 'season'],
-                   right_on=['tid', 'season'],
-                   right_index=True).sort_index()
-    g2 = g2.reset_index().set_index(['gid', 'season', 'tid', 'oid'])
+    gsc = pd.DataFrame(data=matches, columns=['tid', 'oid'])
+    gsc['season'] = season
+    gsc['gid'] = np.arange(gsc.shape[0])
+    # gsc = poss_games.set_index(['gid', 'season'])
+    g1 = gsc.merge(team_feats, on=['season', 'tid']).set_index(['gid', 'season', 'tid', 'oid']).sort_index()
+    # g1 = g1.reset_index().set_index(['gid', 'season', 'tid', 'oid'])
+    g2 = gsc.merge(team_feats, left_on=['season', 'oid'],
+                   right_on=['season', 'tid'],
+                   right_index=True).set_index(['gid', 'season', 'tid', 'oid']).sort_index()
+    # g2 = g2.reset_index().set_index(['gid', 'season', 'tid', 'oid'])
     if diff:
         return g1 - g2
     else:

@@ -1,8 +1,8 @@
 load_data:
-  data_path: D:\madness_data\data
+  data_path: ./data
   init_elo_params: [0.3896076731384477, 6.51988202753904, 34.11927604457895, 0.17251109126016217]
   init_season: 2003
-  save_path: D:\madness_data\data  # This should usually be the same as the data_path
+  save_path: ./data  # This should usually be the same as the data_path
   save_files: True
   run_elo_opt: False
   run_rank_opt: False
@@ -11,57 +11,66 @@ prep_data:
   game_av: 5
 
 dataloader:
-  datapath: D:\madness_data\data
-  train_batch_size: 1
-  val_batch_size: 1
+  datapath: ./data
+  train_batch_size: 4
+  val_batch_size: 4
   split: .7
   season: 2023
   single_example: False
   pin_memory: False
 
-measure_model:
-  name: Measurement
-  init_size: 128
-  latent_size: 65
+class_model:
+  name: MMClassifier
+  data_sz: 67
+  state_sz: 306
   sigma: 10.
-  lr: .00000001
-  weight_decay: 0.5
+  lr: .0001
+  weight_decay: 0.00001
   scheduler_gamma: .000000001
   betas: [.9, .99]
-  num_samples: 100
-  resave_path: D:\madness_data\data
+  warmup: 3500
+  max_iters: 500000
+  resave_path: ./data
   training:
     log_dir: ./logs
     swa_start: .7
-    max_epochs: 1
+    max_epochs: 1000
     log_epoch: 50
     weights_path: ./models
     warm_start: False
     save_model: False
     patience: 50
+  dataloader:
+    datapath: ./data
+    train_batch_size: 64
+    val_batch_size: 64
+    split: .7
+    season: 2023
+    single_example: False
+    pin_memory: False
 
 model:
   name: DKF
-  x_dim: 5
-  z_dim: 30
-  u_dim: 3
+  x_dim: 2
+  z_dim: 300
+  u_dim: 92
   z0_dim: 6
-  trans_dim: 100
-  emission_dim: 100
-  rnn_dim: 200
+  trans_dim: 500
+  emission_dim: 500
+  rnn_dim: 500
   num_rnn_layers: 1
   annealing_factor: .01
-  warmup: 1500
-  max_iters: 1000000
-  lr: .01
-  weight_decay: 0.00001
+  warmup: 350
+  max_iters: 250000
+  lr: .0001
+  weight_decay: 0.01
   scheduler_gamma: .000000001
   betas: [.9, .99]
-  resave_path: D:\madness_data\data
+  resave_path: ./data
   training:
     log_dir: ./logs
     swa_start: .7
-    max_epochs: 1000
+    max_epochs: 200
     log_epoch: 50
     weights_path: ./models
     warm_start: False

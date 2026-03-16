@@ -273,13 +273,19 @@ init_df = init_df.join(coaches, how='left', on=['season', 'tid'])
 
 init_df = init_df.fillna(0)  # This sets all NaNs to the mean so we don't consider them
 
-svd = TruncatedSVD(n_components=init_df.shape[1])
+tdata = pd.read_csv(f'{data.train_dataset.datapath}/GameDataAdv.csv').set_index(['gid', 'season', 'tid', 'oid']).loc[:, 2011:, :, :]
+tdata['t_oppscore'] = tdata['o_score']
+gdata = pd.read_csv(f'{data.train_dataset.datapath}/GameDataBasic.csv').set_index(['gid', 'season', 'tid', 'oid']).loc[:, 2011:, :, :]
+tdata_av = date_weight(tdata, gdata)
+matches = getMatches(gdata, tdata_av)
+match = matches[0].join(matches[1], lsuffix='_t', rsuffix='_o')
+from sklearn.decomposition import TruncatedSVD
+svd = TruncatedSVD(n_components=90)
+u_data = pd.DataFrame(data=svd.fit_transform(match), index=match.index)
+u_data['elo'] = tdata.loc[u_data.index, 't_elo']
+u_data = normalize(u_data)
+u_data['gloc'] = gdata.loc[u_data.index, 'gloc']
+u_data.columns = [f'o_{col}' for col in u_data.columns]
 
-state_df = pd.DataFrame(data=svd.fit_transform(init_df), index=init_df.index)
-
-# Save everything out to .pt files for modification in the Kalman filter
-if config['load_data']['save_files']:
-    for idx, row in tqdm(state_df.iterrows()):
-        # For each one, add some noise for the optimization routine
-        new_tensor = torch.tensor(np.concatenate([row.values, np.random.rand(10)]), dtype=torch.float32, requires_grad=False)
-        torch.save(new_tensor, Path(f'{config["load_data"]["save_path"]}/state_vectors/{idx[0]}_{idx[1]}.pt'))
+out_data = normalize(tdata[['t_score', 't_oppscore']]).join(u_data, how='outer')
+out_data.to_csv(f'{data.train_dataset.datapath}/kalman_data.csv')
