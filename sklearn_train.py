@@ -16,11 +16,8 @@ with open('./run_params.yaml', 'r') as file:
         print(exc)
 
 datapath = config['dataloader']['datapath']
-ncomp = 140
-features = pd.read_csv(Path(f'{datapath}/GameDataAdv.csv')).set_index(['gid', 'season', 'tid', 'oid'])
-avf = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
-bids = pd.read_csv(Path(f'{datapath}/GameDataBasic.csv')).set_index(['gid', 'season', 'tid', 'oid'])
-features = date_weight(features, bids).join(avf, lsuffix='_d', rsuffix='_a')
+ncomp = 200
+features = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
 svd = TruncatedSVD(n_components=ncomp)
 features = normalize(pd.DataFrame(data=svd.fit_transform(features), index=features.index, columns=[f't_{col}' for col in range(ncomp)]))
 
@@ -48,8 +45,7 @@ for degree in range(2, 9):
     print(f'Legendre feature degree: {degree}.')
     leg_feats = get_legendre_pipeline(degree=degree, include_bias=False)
     nfeats = pd.DataFrame(index=features.index, data=leg_feats.fit_transform(features[rfe.feature_names_in_[rfe.ranking_ <= 3]]))
-    dn0, dn1 = getMatches(tids, nfeats)
-    X_nfeat = dn0 - dn1
+    X_nfeat = getMatches(tids, nfeats, diff=True)
 
     s_cv = SeasonalSplit()
     for n_est in results.columns:
@@ -66,11 +62,33 @@ for degree in range(2, 9):
             rfc_results = pd.DataFrame(index=ps.index, columns=['Res', 'res1'], data=rfc.predict_proba(ps))
             res = []
             for _ in range(100):
-                test_br = applyResultsToBracket(test_br, rfc_results, select_random=True, random_limit=.25)
+                test_br = applyResultsToBracket(test_br, rfc_results, select_random=True, random_limit=1.)
                 res.append(scoreBracket(test_br, truth_br))
             print(f'Average score of {np.mean(res)} with STD of {np.std(res)}.')
             total_res.append(np.mean(res))
         results.loc[degree, n_est] = np.mean(total_res)
+
+best_performer = np.where(results == np.max(results))
+best_degree = results.index[best_performer[0][0]]
+best_n_est = results.columns[best_performer[1][0]]
+
+leg_feats = get_legendre_pipeline(degree=best_degree, include_bias=False)
+nfeats = pd.DataFrame(index=features.index, data=leg_feats.fit_transform(features[rfe.feature_names_in_[rfe.ranking_ <= 3]]))
+X_nfeat = getMatches(tids, nfeats, diff=True)
+
+rfc = RandomForestClassifier(n_estimators=best_n_est)
+
+rfc.fit(X_nfeat, np.ravel(y_feat))
+
+from utils.dataframe_utils import getPossMatches
+
+ps = getPossMatches(nfeats, 2026, True, False, datapath)
+results = pd.DataFrame(index=ps.index, columns=['Res', 'res1'], data=rfc.predict_proba(ps))
+
+ps = getPossMatches(nfeats, 2026, True, False, datapath, 'W')
+
+results = pd.concat([results, pd.DataFrame(index=ps.index, columns=['Res', 'res1'], data=rfc.predict_proba(ps))])
+results.to_csv(f'{datapath}/rfc_results.csv')
 
 
 

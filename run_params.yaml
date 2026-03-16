@@ -21,8 +21,8 @@ dataloader:
 
 class_model:
   name: MMClassifier
-  data_sz: 67
-  state_sz: 306
+  data_sz: 303
+  state_sz: 180
   sigma: 10.
   lr: .0001
   weight_decay: 0.00001
@@ -34,7 +34,7 @@ class_model:
   training:
     log_dir: ./logs
     swa_start: .7
-    max_epochs: 1000
+    max_epochs: 100
     log_epoch: 50
     weights_path: ./models
     warm_start: False
@@ -52,7 +52,7 @@ class_model:
 model:
   name: DKF
   x_dim: 2
-  z_dim: 300
+  z_dim: 90
   u_dim: 92
   z0_dim: 6
   trans_dim: 500
@@ -63,7 +63,7 @@ model:
   warmup: 350
   max_iters: 250000
   lr: .0001
-  weight_decay: 0.01
+  weight_decay: 0.0
   scheduler_gamma: .000000001
   betas: [.9, .99]
   resave_path: ./data

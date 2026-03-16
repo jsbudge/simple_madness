@@ -228,25 +228,26 @@ if config['load_data']['save_files']:
     sdf.to_csv(Path(f'{config["load_data"]["save_path"]}/GameDataBasic.csv'))
 
 # Create a dataframe of the tournament results with average data
-ncaa_fnme = f'{config["load_data"]["data_path"]}/MNCAATourneyCompactResults.csv'
-ncaa_tdf = pd.read_csv(ncaa_fnme)
+ncaa_tdf = pd.DataFrame()
+for gender in ['M', 'W']:
+    ncaa_fnme = f'{config["load_data"]["data_path"]}/{gender}NCAATourneyCompactResults.csv'
+    ncaa_tdf = pd.concat([ncaa_tdf, prepFrame(pd.read_csv(ncaa_fnme))])
 
-ncaa_tdf = prepFrame(ncaa_tdf)
-
-# Add in secondary tourney results
-sec_fnme = f'{config["load_data"]["data_path"]}/MSecondaryTourneyCompactResults.csv'
-sc_tdf = pd.read_csv(sec_fnme)
-ncaa_tdf = pd.concat([ncaa_tdf, prepFrame(sc_tdf)])
+    # Add in secondary tourney results
+    sec_fnme = f'{config["load_data"]["data_path"]}/{gender}SecondaryTourneyCompactResults.csv'
+    sc_tdf = pd.read_csv(sec_fnme)
+    ncaa_tdf = pd.concat([ncaa_tdf, prepFrame(sc_tdf)])
 ncaa_tdf['t_win'] = ncaa_tdf['t_score'] - ncaa_tdf['o_score'] > 0
+ncaa_tdf = ncaa_tdf.sort_index().loc[:, 2011:, :, :]
+
+if config['load_data']['save_files']:
+    ncaa_tdf.to_csv(Path(f'{config["load_data"]["save_path"]}/TourneyResults.csv'))
 
 '''# merge information with teams
 print('Generating tournament training data...')
 avdf_norm = normalize(avdf, to_season=True)
 # tdf, odf = getMatches(ncaa_tdf, avdf_norm)
 # results_df = ncaa_tdf.loc[tdf.index, ['t_win']]'''
-
-if config['load_data']['save_files']:
-    avdf_norm.to_csv(Path(f'{config["load_data"]["save_path"]}/Averages.csv'))
 
 # Use this data to build initial state vectors for teams
 init_df = adf[['t_elo']].groupby(['season', 'tid']).first().reset_index()
@@ -272,12 +273,20 @@ coaches = (coaches - coaches.mean()) / coaches.std()
 init_df = init_df.join(coaches, how='left', on=['season', 'tid'])
 
 init_df = init_df.fillna(0)  # This sets all NaNs to the mean so we don't consider them
+# avdf_norm = avdf_norm.join(init_df)
+if config['load_data']['save_files']:
+    avdf_norm.to_csv(Path(f'{config["load_data"]["save_path"]}/Averages.csv'))
 
-tdata = pd.read_csv(f'{data.train_dataset.datapath}/GameDataAdv.csv').set_index(['gid', 'season', 'tid', 'oid']).loc[:, 2011:, :, :]
+dpath = config['load_data']['data_path']
+
+from utils.dataframe_utils import date_weight, getMatches
+
+tdata = pd.read_csv(f'{dpath}/GameDataAdv.csv').set_index(['gid', 'season', 'tid', 'oid'])
 tdata['t_oppscore'] = tdata['o_score']
-gdata = pd.read_csv(f'{data.train_dataset.datapath}/GameDataBasic.csv').set_index(['gid', 'season', 'tid', 'oid']).loc[:, 2011:, :, :]
-tdata_av = date_weight(tdata, gdata)
-matches = getMatches(gdata, tdata_av)
+gdata = pd.read_csv(f'{dpath}/GameDataBasic.csv').set_index(['gid', 'season', 'tid', 'oid'])
+tdata_av = normalize(date_weight(tdata, gdata))
+avdf_norm = avdf_norm.join(tdata_av, lsuffix='_a', rsuffix='_t').join(init_df, lsuffix='_i', rsuffix='_av')
+matches = getMatches(gdata, avdf_norm)
 match = matches[0].join(matches[1], lsuffix='_t', rsuffix='_o')
 from sklearn.decomposition import TruncatedSVD
 svd = TruncatedSVD(n_components=90)
@@ -288,4 +297,8 @@ u_data['gloc'] = gdata.loc[u_data.index, 'gloc']
 u_data.columns = [f'o_{col}' for col in u_data.columns]
 
 out_data = normalize(tdata[['t_score', 't_oppscore']]).join(u_data, how='outer')
-out_data.to_csv(f'{data.train_dataset.datapath}/kalman_data.csv')
+
+if config['load_data']['save_files']:
+    avdf_norm = avdf_norm.groupby(['season', 'tid']).first()
+    avdf_norm.to_csv(Path(f'{config["load_data"]["save_path"]}/Averages.csv'))
+    out_data.to_csv(f'{dpath}/kalman_data.csv')

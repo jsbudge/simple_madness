@@ -17,7 +17,7 @@ if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
     # torch.autograd.set_detect_anomaly(True)
     gpu_num = 0
-    device = 'cpu'  # f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
+    device = f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
     seed_everything(np.random.randint(1, 2048), workers=True)
 
     with open('./run_params.yaml', 'r') as file:
@@ -37,7 +37,7 @@ if __name__ == '__main__':
     expected_lr = max((config['class_model']['lr'] * config['class_model']['scheduler_gamma'] ** (config['class_model']['training']['max_epochs'] *
                                                                 config['class_model']['training']['swa_start'])), 1e-9)
     print("======= Training =======")
-    trainer = Trainer(logger=logger, max_epochs=config['class_model']['training']['max_epochs'], accelerator=device,
+    trainer = Trainer(logger=logger, max_epochs=config['class_model']['training']['max_epochs'],
                       default_root_dir=config['class_model']['training']['weights_path'], num_sanity_val_steps=0,
                       log_every_n_steps=config['class_model']['training']['log_epoch'], callbacks=
                       [EarlyStopping(monitor='train_loss', patience=config['class_model']['training']['patience'],
@@ -49,49 +49,54 @@ if __name__ == '__main__':
         trainer.fit(model, datamodule=data)
     except KeyboardInterrupt:
         print('Training interrupted by user.')
+
+    config['class_model']['dataloader']['is_tourney'] = True
+    tdata = KalmanDataModuleCV(**config['class_model']['dataloader'])
+    tdata.setup()
+    model.lr = 1e-7
+    model.max_iters = 17000
+
+    trainer = Trainer(logger=logger, max_epochs=150,
+                      default_root_dir=config['class_model']['training']['weights_path'], num_sanity_val_steps=0,
+                      log_every_n_steps=config['class_model']['training']['log_epoch'], callbacks=
+                      [EarlyStopping(monitor='train_loss', patience=config['class_model']['training']['patience'],
+                                     check_finite=True),
+                       StochasticWeightAveraging(swa_lrs=expected_lr,
+                                                 swa_epoch_start=config['class_model']['training']['swa_start']),
+                       ModelCheckpoint(monitor='train_loss')])
+
+    print("======= Finetuning =======")
+    try:
+        trainer.fit(model, datamodule=tdata)
+    except KeyboardInterrupt:
+        print('Training interrupted by user.')
+
+    datapath = './data'
+
+    avs = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
+
+    from utils.dataframe_utils import getPossMatches
+
+    ps = getPossMatches(avs, 2026, False, False, datapath)
     model.eval()
-    if config['class_model']['training']['save_model']:
-        trainer.save_checkpoint(f"{config['class_model']['training']['weights_path']}/{mdl_name}.ckpt")
+    model_res = model(torch.tensor(ps[0].values, dtype=torch.float32, device=model.device),
+                      torch.tensor(ps[1].values, dtype=torch.float32, device=model.device),
+                      torch.zeros((ps[0].shape[0], 1), dtype=torch.float32, device=model.device))
 
-    game_sets = {}
-    elo_data = pd.read_csv(Path(f'{data.train_dataset.datapath}/GameDataAdv.csv')).groupby(['season', 'tid']).last()[['t_elo']]
-    raw_data = pd.read_csv(Path(f'{data.train_dataset.datapath}/kalman_data.csv')).drop(columns=['tid']).rename(columns={'oid': 'tid'}).groupby(['season', 'tid']).first()
-    raw_data = raw_data[[col for col in raw_data.columns if 'o_' in col]]
-    raw_data['o_elo'] = (elo_data.loc[raw_data.index, 't_elo'] - elo_data['t_elo'].mean()) / elo_data['t_elo'].std()
-    raw_data['o_gloc'] = 0
+    results = pd.DataFrame(index=ps[0].index, columns=['Res'], data=1 - model_res.data.cpu().numpy())
 
-    _, u_data = getPossMatches(raw_data, 2023, use_seed=True, datapath=data.train_dataset.datapath)
-    results = pd.DataFrame(index=u_data.index, columns=['txh', 'txh_o', 'txmin', 'txmin_o', 'txmax', 'txmax_o', 'oxh',
-                                                        'oxh_t', 'oxmin', 'oxmin_t', 'oxmax', 'oxmax_t'])
-    for idx, row in tqdm(u_data.iterrows()):
-        # tid results
-        x, u, y = data.val_dataset.get_team((idx[1], idx[2]))
-        x = torch.cat([x, torch.zeros(1, 2)], dim=0).unsqueeze(0).float()
-        u = torch.cat([u, torch.tensor(u_data.loc[idx].values).unsqueeze(0)], dim=0).unsqueeze(0).float()
-        txh, txmin, txmax = model.predict(x, u)
-        results.loc[idx, ['txh', 'txh_o', 'txmin', 'txmin_o', 'txmax', 'txmax_o']] = \
-            [txh[0, -1, 0].data.numpy(), txmin[0, -1, 0].data.numpy(), txmax[0, -1, 0].data.numpy(),
-             txh[0, -1, 1].data.numpy(), txmin[0, -1, 1].data.numpy(), txmax[0, -1, 1].data.numpy()]
+    ps = getPossMatches(avs, 2026, False, False, datapath, 'W')
+    model_res = model(torch.tensor(ps[0].values, dtype=torch.float32, device=model.device),
+                      torch.tensor(ps[1].values, dtype=torch.float32, device=model.device),
+                      torch.zeros((ps[0].shape[0], 1), dtype=torch.float32, device=model.device))
 
-        # oid results
-        x, u, y = data.val_dataset.get_team((idx[1], idx[3]))
-        x = torch.cat([x, torch.zeros(1, 2)], dim=0).unsqueeze(0).float()
-        u = torch.cat([u, torch.tensor(u_data.loc[idx].values).unsqueeze(0)], dim=0).unsqueeze(0).float()
-        oxh, oxmin, oxmax = model.predict(x, u)
-        results.loc[idx, ['oxh', 'oxh_t', 'oxmin', 'oxmin_t', 'oxmax', 'oxmax_t']] = \
-            [oxh[0, -1, 0].data.numpy(), oxmin[0, -1, 0].data.numpy(), oxmax[0, -1, 0].data.numpy(),
-             oxh[0, -1, 1].data.numpy(), oxmin[0, -1, 1].data.numpy(), oxmax[0, -1, 1].data.numpy()]
+    results = pd.concat([results, pd.DataFrame(index=ps[0].index, columns=['Res'], data=1 - model_res.data.cpu().numpy())])
 
-    from bracket import generateBracket, applyResultsToBracket, scoreBracket
-    from scipy.special import erf
+    results.to_csv(Path(f'{datapath}/mlp_results.csv'))
 
-    truth_br = generateBracket(2023, True, datapath=data.train_dataset.datapath)
-    test_br = generateBracket(2023, True, datapath=data.train_dataset.datapath)
-    rfc_results = pd.DataFrame(index=u_data.index, columns=['Res'], data=1 - .5 * (1 + erf((-(results['txh'].values - results['oxh'].values).astype(float)) / (.2 * np.sqrt(2)))))
-    res = []
-    for _ in range(100):
-        test_br = applyResultsToBracket(test_br, rfc_results, select_random=True, random_limit=1.)
-        print(f'Final score of {scoreBracket(test_br, truth_br)}')
+
+
+
 
 
 

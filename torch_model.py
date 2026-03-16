@@ -70,7 +70,7 @@ class DKF(LightningModule):
 
             z_t = z_mu + torch.rand_like(z_mu) * torch.sqrt(torch.exp(z_logvar))
             # p(x_t|z_t)
-            x_t = self.emitter(z_t) + torch.rand(batch_size, x_dim) * torch.sqrt(torch.exp(self.emitter_log_sigma))
+            x_t = self.emitter(z_t) + torch.rand(batch_size, x_dim).to(self.device) * torch.sqrt(torch.exp(self.emitter_log_sigma.to(self.device)))
 
             # compute loss
             kl_states[:, t] = self.kldiv(z_mu, z_logvar, z_prior_mu, z_prior_logvar)
@@ -145,7 +145,7 @@ class DKF(LightningModule):
             x_025[:, t] = x_samples.quantile(0.025, 0)
             x_975[:, t] = x_samples.quantile(0.975, 0)
 
-        return x_hat, x_025, x_975
+        return x_hat, x_025, x_975, z_mu, z_t
 
     def get_sigmas(self, z, p):
         """generates sigma points"""
@@ -241,7 +241,8 @@ class MMClassifier(LightningModule):
         return self.classify(torch.cat([x, y], dim=-1))
 
     def loss_function(self, y, y_pred):
-        return tf.binary_cross_entropy(y, y_pred)
+        return torch.mean((y_pred - y)**2)
+        # return tf.binary_cross_entropy(y, y_pred)
 
     def on_fit_start(self) -> None:
         if self.trainer.is_global_zero and self.logger:

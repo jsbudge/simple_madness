@@ -58,18 +58,25 @@ class GameDataset(Dataset):
 
 
 class KalmanDataset(Dataset):
-    def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, seed: int = 7):
+    def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, is_tourney: bool = False, seed: int = 7):
         # Load in data
         self.datapath = datapath
         gids = pd.read_csv(Path(f'{datapath}/GameDataAdv.csv')).set_index(['gid', 'season', 'tid', 'oid'])
         bids = pd.read_csv(Path(f'{datapath}/GameDataBasic.csv')).set_index(['gid', 'season', 'tid', 'oid'])
-        avs = normalize(date_weight(gids, bids))
-        data = gids.loc[gids.index.get_level_values(1) == season] if is_val else gids.loc[
-            gids.index.get_level_values(1) != season]
+        avs = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
+        if is_tourney:
+            data = pd.read_csv(Path(f'{datapath}/TourneyResults.csv')).set_index(['gid', 'season', 'tid', 'oid'])
+        else:
+            data = gids.loc[gids.index.get_level_values(1) == season] if is_val else gids.loc[
+                gids.index.get_level_values(1) != season]
         data = data.loc[:, 2011:, :, :]
         d0, d1 = getMatches(data, avs)
-        home = bids.loc[data.index, ['gloc']].values
-        self.labels = torch.tensor((data[['t_mov']].values > 0).astype(float)).float()
+        if is_tourney:
+            home = np.zeros((data.shape[0], 1))
+            self.labels = torch.tensor(data[['t_win']].values.astype(float)).float()
+        else:
+            home = bids.loc[data.index, ['gloc']].values
+            self.labels = torch.tensor((data[['t_mov']].values > 0).astype(float)).float()
         self.d0 = torch.tensor(d0.values).float()
         self.d1 = torch.tensor(d1.values).float()
         self.home = torch.tensor(home).float()
@@ -147,6 +154,7 @@ class KalmanDataModuleCV(LightningDataModule):
             single_example: bool = False,
             device: str = 'cpu',
             datapath: str = './data',
+            is_tourney: bool = False,
             season: int = 2023,
             **kwargs,
     ):
@@ -161,11 +169,12 @@ class KalmanDataModuleCV(LightningDataModule):
         self.single_example = single_example
         self.device = device
         self.datapath = datapath
+        self.is_tourney = is_tourney
         self.season = season
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = KalmanDataset(self.datapath, season=self.season)
-        self.val_dataset = KalmanDataset(self.datapath, season=self.season, is_val=True)
+        self.train_dataset = KalmanDataset(self.datapath, season=self.season, is_tourney=self.is_tourney)
+        self.val_dataset = KalmanDataset(self.datapath, season=self.season, is_tourney=self.is_tourney, is_val=True)
 
     def changeSeason(self, season: int) -> None:
         self.season = season

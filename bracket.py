@@ -20,9 +20,8 @@ def scoreBracket(br, truth_br, score_type=None):
                         score += 32 / len(rnds[rnd]) * 10.
                     elif score_type == 'log_loss':
                         score += np.log(gm.win_perc)
-                else:
-                    if score_type == 'log_loss':
-                        score += np.log(1 - gm.win_perc)
+                elif score_type == 'log_loss':
+                    score += np.log(1 - gm.win_perc)
     return score
 
 
@@ -86,8 +85,9 @@ def generateBracket(season: int, use_results: bool = True, datapath: str = './da
 
 class Game(NodeMixin):
     tid: int
-    win_perc: float = 0.
+    win_perc: float = 1.
     slot_win: str
+    slot_llikelihood: float = 0.
 
     def __init__(self, id, round=None, parent=None, data=None, children=None):
         super().__init__()
@@ -100,7 +100,7 @@ class Game(NodeMixin):
 
     @property
     def has_children(self):
-        return True if self.children else False
+        return bool(self.children)
 
     def __str__(self):
         return f'{self.id}, Round {self.round}'
@@ -113,10 +113,7 @@ class Bracket(object):
     def __init__(self, root_node_id=None):
         nd = Game(root_node_id, round=6)
         self._root = nd
-        if root_node_id is not None:
-            self.node_dict = {root_node_id: nd}
-        else:
-            self.node_dict = {}
+        self.node_dict = {root_node_id: nd} if root_node_id is not None else {}
 
     @property
     def root(self):
@@ -146,13 +143,16 @@ class Bracket(object):
 
     def __str__(self, datapath = "./data"):
         tnames = loadTeamNames(datapath)
+        total_ll = 0.
         rstr = ''
         for pre, fill, node in RenderTree(self.root, style=AsciiStyle()):
             treestr = pre + node.id + ' ' + tnames[node.tid]
             if hasattr(node, 'win_perc') and node.has_children:
-                wp = node.win_perc if node.win_perc > .5 else 1 - node.win_perc
-                treestr += f': {100 * wp:.2f}%'
+                wp = node.win_perc#  if node.win_perc > .5 else 1 - node.win_perc
+                treestr += f': {100 * wp:.2f}% - LL: {node.slot_llikelihood:.4f}'
+                total_ll += node.slot_llikelihood
             rstr += '\n' + treestr.ljust(4)
+        rstr += f'\n\nTotal log likelihood: {total_ll:.4f}'
         return rstr
 
     def __len__(self):
@@ -224,11 +224,10 @@ def applyResultsToBracket(br: Bracket, res: pd.DataFrame,
             gm = br[gmid]
             if gm.has_children:
                 gm_res = res.loc(axis=0)[:, :, gm.children[0].tid, gm.children[1].tid]['Res'].values[0]
-                gm.win_perc = gm_res
-                if select_random and abs(gm_res - .5) * 2 < random_limit:
-                    gm.tid = gm.children[1].tid if np.random.rand() < gm_res else gm.children[0].tid
-                    gm.slot_win = gm.children[1].slot_win if np.random.rand() < gm_res else gm.children[0].slot_win
-                else:
-                    gm.tid = gm.children[1].tid if gm_res > .5 else gm.children[0].tid
-                    gm.slot_win = gm.children[1].slot_win if gm_res > .5 else gm.children[0].slot_win
+                rval = np.random.rand() if select_random and abs(gm_res - .5) * 2 < random_limit else 1.
+                winner = gm.children[1] if rval < gm_res else gm.children[0]
+                gm.win_perc = gm_res if rval < gm_res else 1 - gm_res
+                gm.slot_llikelihood = np.log(gm.win_perc * (winner.win_perc if winner.has_children else 1.))
+                gm.slot_win = winner.slot_win
+                gm.tid = winner.tid
     return br

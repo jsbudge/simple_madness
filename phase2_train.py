@@ -17,7 +17,7 @@ if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
     # torch.autograd.set_detect_anomaly(True)
     gpu_num = 0
-    device = 'cpu'  # f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
+    device = f'cuda:{gpu_num}' if torch.cuda.is_available() else 'cpu'
     seed_everything(np.random.randint(1, 2048), workers=True)
 
     with open('./run_params.yaml', 'r') as file:
@@ -37,7 +37,7 @@ if __name__ == '__main__':
     expected_lr = max((config['model']['lr'] * config['model']['scheduler_gamma'] ** (config['model']['training']['max_epochs'] *
                                                                 config['model']['training']['swa_start'])), 1e-9)
     print("======= Training =======")
-    trainer = Trainer(logger=logger, max_epochs=config['model']['training']['max_epochs'], accelerator=device,
+    trainer = Trainer(logger=logger, max_epochs=config['model']['training']['max_epochs'],
                       default_root_dir=config['model']['training']['weights_path'], num_sanity_val_steps=0,
                       log_every_n_steps=config['model']['training']['log_epoch'], callbacks=
                       [EarlyStopping(monitor='train_total_loss', patience=config['model']['training']['patience'],
@@ -60,38 +60,30 @@ if __name__ == '__main__':
     raw_data['o_elo'] = (elo_data.loc[raw_data.index, 't_elo'] - elo_data['t_elo'].mean()) / elo_data['t_elo'].std()
     raw_data['o_gloc'] = 0
 
-    _, u_data = getPossMatches(raw_data, 2023, use_seed=True, datapath=data.train_dataset.datapath)
-    results = pd.DataFrame(index=u_data.index, columns=['txh', 'txh_o', 'txmin', 'txmin_o', 'txmax', 'txmax_o', 'oxh',
-                                                        'oxh_t', 'oxmin', 'oxmin_t', 'oxmax', 'oxmax_t'])
-    for idx, row in tqdm(u_data.iterrows()):
-        # tid results
-        x, u, y = data.val_dataset.get_team((idx[1], idx[2]))
-        x = torch.cat([x, torch.zeros(1, 2)], dim=0).unsqueeze(0).float()
-        u = torch.cat([u, torch.tensor(u_data.loc[idx].values).unsqueeze(0)], dim=0).unsqueeze(0).float()
-        txh, txmin, txmax = model.predict(x, u)
-        results.loc[idx, ['txh', 'txh_o', 'txmin', 'txmin_o', 'txmax', 'txmax_o']] = \
-            [txh[0, -1, 0].data.numpy(), txmin[0, -1, 0].data.numpy(), txmax[0, -1, 0].data.numpy(),
-             txh[0, -1, 1].data.numpy(), txmin[0, -1, 1].data.numpy(), txmax[0, -1, 1].data.numpy()]
+    season = 2026
+    final = pd.DataFrame()
+    for gender in ['M', 'W']:
+        for s in range(2011, 2027):
+            _, u_data = getPossMatches(raw_data, s, use_seed=False, datapath=data.train_dataset.datapath, gender=gender)
+            tids = list(set(u_data.index.get_level_values(2)))
+            results = pd.DataFrame(columns=['season', 'tid'] + [f't_{i}' for i in range(50)])
+            results['season'] = np.ones(len(tids)).astype(int) * s
+            results['tid'] = tids
+            results = results.set_index(['season', 'tid'])
+            for tid in tqdm(tids):
+                # tid results
+                try:
+                    x, u, y = data.train_dataset.get_team((s, tid))
+                except Exception as e:
+                    try:
+                        x, u, y = data.val_dataset.get_team((s, tid))
+                    except Exception as e:
+                        continue
+                txh, txmin, txmax, z_mu, z_t = model.predict(x.unsqueeze(0), u.unsqueeze(0))
+                results.loc[(s, tid), results.columns] = z_mu[-1].data.cpu().numpy()
+            final = pd.concat([final, results])
 
-        # oid results
-        x, u, y = data.val_dataset.get_team((idx[1], idx[3]))
-        x = torch.cat([x, torch.zeros(1, 2)], dim=0).unsqueeze(0).float()
-        u = torch.cat([u, torch.tensor(u_data.loc[idx].values).unsqueeze(0)], dim=0).unsqueeze(0).float()
-        oxh, oxmin, oxmax = model.predict(x, u)
-        results.loc[idx, ['oxh', 'oxh_t', 'oxmin', 'oxmin_t', 'oxmax', 'oxmax_t']] = \
-            [oxh[0, -1, 0].data.numpy(), oxmin[0, -1, 0].data.numpy(), oxmax[0, -1, 0].data.numpy(),
-             oxh[0, -1, 1].data.numpy(), oxmin[0, -1, 1].data.numpy(), oxmax[0, -1, 1].data.numpy()]
-
-    from bracket import generateBracket, applyResultsToBracket, scoreBracket
-    from scipy.special import erf
-
-    truth_br = generateBracket(2023, True, datapath=data.train_dataset.datapath)
-    test_br = generateBracket(2023, True, datapath=data.train_dataset.datapath)
-    rfc_results = pd.DataFrame(index=u_data.index, columns=['Res'], data=1 - .5 * (1 + erf((-(results['txh'].values - results['oxh'].values).astype(float)) / (.2 * np.sqrt(2)))))
-    res = []
-    for _ in range(100):
-        test_br = applyResultsToBracket(test_br, rfc_results, select_random=True, random_limit=1.)
-        print(f'Final score of {scoreBracket(test_br, truth_br)}')
+    final.to_csv(f'{data.train_dataset.datapath}/dkf_data.csv')
 
 
 
