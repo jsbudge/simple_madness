@@ -1,7 +1,7 @@
 from copy import deepcopy
 from typing import Any
 import numpy as np
-from activations import GrowingCosine, ParameterSinLU, _xavier_init, GatedTransition, Emitter, Combiner
+from activations import _xavier_init, GatedTransition, Emitter, Combiner, nonlinearities
 from losses import KLDivProb
 import torch
 from pytorch_lightning import LightningModule
@@ -209,26 +209,26 @@ class DKF(LightningModule):
 
 class MMClassifier(LightningModule):
 
-    def __init__(self, data_sz: int, state_sz: int = 4, *args, **kwargs):
+    def __init__(self, data_sz: int, state_sz: int = 4, activation: str = 'silu', *args, **kwargs):
         super().__init__()
         self.save_hyperparameters()
         self.automatic_optimization = False
 
         self.encode = nn.Sequential(
             nn.Linear(data_sz, state_sz),
-            nn.SiLU(),
+            nonlinearities[activation],
             nn.Linear(state_sz, state_sz),
         )
 
         self.home_encode = nn.Sequential(
             nn.Linear(data_sz, state_sz),
-            nn.SiLU(),
+            nn.ReLU(),
             nn.Linear(state_sz, state_sz),
         )
 
         self.classify = nn.Sequential(
             nn.Linear(state_sz * 2, state_sz),
-            nn.SiLU(),
+            nonlinearities[activation],
             nn.Linear(state_sz, 1),
             nn.Sigmoid(),
         )
@@ -258,15 +258,6 @@ class MMClassifier(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         self.train_val_get(batch, batch_idx, 'val')
-
-    def on_train_epoch_end(self) -> None:
-        sch = self.lr_schedulers()
-
-        # If the selected scheduler is a ReduceLROnPlateau scheduler.
-        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            sch.step(self.trainer.callback_metrics["val_loss"])
-        else:
-            sch.step()
 
     def on_validation_epoch_end(self) -> None:
         self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, rank_zero_only=True)

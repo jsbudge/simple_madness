@@ -21,33 +21,31 @@ dataloader:
 
 class_model:
   name: MMClassifier
-  data_sz: 303
-  state_sz: 180
-  sigma: 10.
-  lr: .0001
+  data_sz: 90
+  state_sz: 50
+  lr: 0.001
   weight_decay: 0.00001
-  scheduler_gamma: .000000001
-  betas: [.9, .99]
-  warmup: 3500
-  max_iters: 500000
-  resave_path: ./data
+  warmup: 100
+  max_iters: 30000
+  activation: psinlu
   training:
     log_dir: ./logs
     swa_start: .7
-    max_epochs: 100
-    log_epoch: 50
+    max_epochs: 150
+    log_epoch: 500
     weights_path: ./models
     warm_start: False
     save_model: False
     patience: 50
   dataloader:
     datapath: ./data
-    train_batch_size: 64
-    val_batch_size: 64
+    train_batch_size: 32
+    val_batch_size: 32
     split: .7
     season: 2023
     single_example: False
     pin_memory: False
+    data_name: dkf_data
 
 model:
   name: DKF
@@ -70,7 +68,7 @@ model:
   training:
     log_dir: ./logs
     swa_start: .7
-    max_epochs: 200
+    max_epochs: 1
     log_epoch: 50
     weights_path: ./models
     warm_start: False

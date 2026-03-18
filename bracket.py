@@ -30,11 +30,11 @@ def generateBracket(season: int, use_results: bool = True, datapath: str = './da
     seeds = seeds.loc[seeds['Season'] == season]
     slots = pd.read_csv(f'{datapath}/{gender}NCAATourneySlots.csv')
     slots = slots.loc[slots['Season'] == season]
-    seedslots = pd.read_csv(f'{datapath}/{gender}NCAATourneySeedRoundSlots.csv').rename(columns={'GameSlot': 'Slot'})
+    seedslots = pd.read_csv(f'{datapath}/MNCAATourneySeedRoundSlots.csv').rename(columns={'GameSlot': 'Slot'})
     structure = slots.merge(seedslots[['Slot', 'GameRound']], on='Slot')
     structure = structure.loc[np.logical_not(structure.duplicated(['Season', 'Slot'], keep='first'))].sort_values(
         'GameRound')
-    ret_br = Bracket('R6CH')
+    ret_br = Bracket('R6CH', gender=gender)
     for rnd in range(6, -1, -1):
         for g_idx, row in structure.loc[structure['GameRound'] == rnd].iterrows():
             ret_br.addGame(row['Slot'], row['StrongSeed'])
@@ -56,27 +56,23 @@ def generateBracket(season: int, use_results: bool = True, datapath: str = './da
             for gid in r:
                 gm = ret_br[gid]
                 if gm.has_children:
-                    if np.any(results):
-                        try:
-                            rg = results.loc[np.logical_or(np.logical_and(results['WTeamID'] == gm.children[0].tid,
-                                                                          results['LTeamID'] == gm.children[1].tid),
-                                np.logical_and(results['LTeamID'] == gm.children[0].tid,
-                                               results['WTeamID'] == gm.children[1].tid))]
-                            sel_tid = rg['WTeamID'].values[0]
-                            slot_win = gm.children[0].slot_win if gm.children[0].tid == sel_tid else gm.children[1].slot_win
-                        except IndexError:
-                            rg = seedslots.loc[seedslots['Slot'] == gid]
-                            if rg['Seed'].values[0] in results['WTeamID'] or rg['Seed'].values[0] in results['LTeamID']:
-                                sel_tid = seeds.loc[seeds['Seed'] == rg['Seed'].values[0], 'TeamID'].values[0]
-                                slot_win = rg['Seed'].values[0]
-                            else:
-                                sel_tid = seeds.loc[seeds['Seed'] == rg['Seed'].values[1], 'TeamID'].values[0]
-                                slot_win = rg['Seed'].values[1]
-                        gm.tid = sel_tid
-                        gm.slot_win = slot_win
-                    else:
-                        # This is a tournament that has yet to be played
-                        continue
+                    try:
+                        rg = results.loc[np.logical_or(np.logical_and(results['WTeamID'] == gm.children[0].tid,
+                                                                      results['LTeamID'] == gm.children[1].tid),
+                            np.logical_and(results['LTeamID'] == gm.children[0].tid,
+                                           results['WTeamID'] == gm.children[1].tid))]
+                        sel_tid = rg['WTeamID'].values[0]
+                        slot_win = gm.children[0].slot_win if gm.children[0].tid == sel_tid else gm.children[1].slot_win
+                    except IndexError:
+                        rg = seedslots.loc[seedslots['Slot'] == gid]
+                        if rg['Seed'].values[0] in results['WTeamID'] or rg['Seed'].values[0] in results['LTeamID']:
+                            sel_tid = seeds.loc[seeds['Seed'] == rg['Seed'].values[0], 'TeamID'].values[0]
+                            slot_win = rg['Seed'].values[0]
+                        else:
+                            sel_tid = seeds.loc[seeds['Seed'] == rg['Seed'].values[1], 'TeamID'].values[0]
+                            slot_win = rg['Seed'].values[1]
+                    gm.tid = sel_tid
+                    gm.slot_win = slot_win
                 else:
                     gm.tid = seeds.loc[seeds['Seed'] == gid, 'TeamID'].values[0]
                     gm.slot_win = gid
@@ -89,12 +85,12 @@ class Game(NodeMixin):
     slot_win: str
     slot_llikelihood: float = 0.
 
-    def __init__(self, id, round=None, parent=None, data=None, children=None):
+    def __init__(self, game_id, tourn_round=None, parent=None, data=None, children=None):
         super().__init__()
         self.parent = parent
         self.data = data
-        self.id = id
-        self.round = round
+        self.id = game_id
+        self.round = tourn_round
         if children:
             self.children = children
 
@@ -110,9 +106,10 @@ class Bracket(object):
     _root: Game
     node_dict: dict
 
-    def __init__(self, root_node_id=None):
-        nd = Game(root_node_id, round=6)
+    def __init__(self, root_node_id=None, gender='M'):
+        nd = Game(root_node_id, tourn_round=6)
         self._root = nd
+        self.gender = gender
         self.node_dict = {root_node_id: nd} if root_node_id is not None else {}
 
     @property
@@ -125,7 +122,7 @@ class Bracket(object):
         self.node_dict['root'] = nd
 
     def addGame(self, parent_id, nd_id):
-        nd = Game(nd_id, parent=self.node_dict[parent_id], round=self.node_dict[parent_id].round - 1)
+        nd = Game(nd_id, parent=self.node_dict[parent_id], tourn_round=self.node_dict[parent_id].round - 1)
         self.node_dict[nd.id] = nd
 
     def addData(self, data: pd.DataFrame):
@@ -142,7 +139,7 @@ class Bracket(object):
         return self.node_dict[nd_id]
 
     def __str__(self, datapath = "./data"):
-        tnames = loadTeamNames(datapath)
+        tnames = loadTeamNames(datapath, gender=self.gender)
         total_ll = 0.
         rstr = ''
         for pre, fill, node in RenderTree(self.root, style=AsciiStyle()):
@@ -161,48 +158,13 @@ class Bracket(object):
     def getRounds(self):
         return [[node.id for node in children] for children in ZigZagGroupIter(self.root)]
 
-    def getSubmission(self, bracket_number: int = 1, save_file_path: str = None):
-        sample = pd.read_csv('./data/sample_submission.csv')
-        sample['Bracket'] = bracket_number
-        rounds = self.getRounds()
-
-        # Apply results frame in backwards order, since rounds starts at the championship
-        for rnd in range(len(rounds) - 1, -1, -1):
-            for gmid in rounds[rnd]:
-                gm = self.node_dict[gmid]
-                if gm.has_children:
-                    sample.loc[sample['Slot'] == gmid, 'Team'] = gm.slot_win
-        if save_file_path is not None:
-            sample.to_csv(f'{save_file_path}/submission_{bracket_number}.csv')
-        return sample
-
-
-def buildSubmission(menbrackets: list, womenbrackets: list, save_file_path: str = None):
-    master_sub = pd.read_csv('./data/sample_submission.csv')
-    rounds = menbrackets[0].getRounds()
-    res = pd.DataFrame()
-
-    for idx, (mbr, wbr) in enumerate(zip(menbrackets, womenbrackets)):
-        sample = master_sub.copy()
-        sample['Bracket'] = idx + 1
-        # Apply results frame in backwards order, since rounds starts at the championship
-        for rnd in range(len(rounds) - 1, -1, -1):
-            for gmid in rounds[rnd]:
-                gm = mbr[gmid]
-                if gm.has_children:
-                    sample.loc[np.logical_and(sample['Slot'] == gmid,
-                                              sample['Tournament'] == 'M'), 'Team'] = gm.slot_win
-                try:
-                    gm = wbr[gmid]
-                    if gm.has_children:
-                        sample.loc[np.logical_and(sample['Slot'] == gmid,
-                                                  sample['Tournament'] == 'W'), 'Team'] = gm.slot_win
-                except KeyError:
-                    pass
-        res = pd.concat([res, sample])
-    if save_file_path is not None:
-        res.to_csv(f'{save_file_path}/submission.csv')
-    return res
+    @property
+    def log_likelihood(self):
+        total_ll = 0.
+        for r in [list(children) for children in ZigZagGroupIter(self.root)]:
+            for gm in r:
+                total_ll += gm.slot_llikelihood
+        return total_ll
 
 
 def applyResultsToBracket(br: Bracket, res: pd.DataFrame,
@@ -224,7 +186,7 @@ def applyResultsToBracket(br: Bracket, res: pd.DataFrame,
             gm = br[gmid]
             if gm.has_children:
                 gm_res = res.loc(axis=0)[:, :, gm.children[0].tid, gm.children[1].tid]['Res'].values[0]
-                rval = np.random.rand() if select_random and abs(gm_res - .5) * 2 < random_limit else 1.
+                rval = np.random.rand() if select_random and abs(gm_res * 2 - 1) < random_limit else 1.
                 winner = gm.children[1] if rval < gm_res else gm.children[0]
                 gm.win_perc = gm_res if rval < gm_res else 1 - gm_res
                 gm.slot_llikelihood = np.log(gm.win_perc * (winner.win_perc if winner.has_children else 1.))

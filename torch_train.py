@@ -5,12 +5,8 @@ from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging
 from dataloader import KalmanDataModuleCV
 from torch_model import MMClassifier
 import numpy as np
-from utils.dataframe_utils import prepFrame, getMatches, date_weight, normalize, getPossMatches
-from tqdm import tqdm
-import itertools
 import yaml
 from pathlib import Path
-from scipy.optimize import minimize
 
 
 if __name__ == '__main__':
@@ -34,8 +30,7 @@ if __name__ == '__main__':
     mdl_name = f"{config['class_model']['name']}"
     model = MMClassifier(**config['class_model'])
     logger = loggers.TensorBoardLogger(config['class_model']['training']['log_dir'], version=0, name=mdl_name)
-    expected_lr = max((config['class_model']['lr'] * config['class_model']['scheduler_gamma'] ** (config['class_model']['training']['max_epochs'] *
-                                                                config['class_model']['training']['swa_start'])), 1e-9)
+    expected_lr = 1e-6
     print("======= Training =======")
     trainer = Trainer(logger=logger, max_epochs=config['class_model']['training']['max_epochs'],
                       default_root_dir=config['class_model']['training']['weights_path'], num_sanity_val_steps=0,
@@ -54,7 +49,7 @@ if __name__ == '__main__':
     tdata = KalmanDataModuleCV(**config['class_model']['dataloader'])
     tdata.setup()
     model.lr = 1e-7
-    model.max_iters = 17000
+    model.max_iters = 10000
 
     trainer = Trainer(logger=logger, max_epochs=150,
                       default_root_dir=config['class_model']['training']['weights_path'], num_sanity_val_steps=0,
@@ -73,7 +68,7 @@ if __name__ == '__main__':
 
     datapath = './data'
 
-    avs = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
+    avs = pd.read_csv(Path(f'{datapath}/dkf_data.csv')).set_index(['season', 'tid'])
 
     from utils.dataframe_utils import getPossMatches
 
@@ -92,7 +87,7 @@ if __name__ == '__main__':
 
     results = pd.concat([results, pd.DataFrame(index=ps[0].index, columns=['Res'], data=1 - model_res.data.cpu().numpy())])
 
-    results.to_csv(Path(f'{datapath}/mlp_results.csv'))
+    results.to_csv(Path(f'{datapath}/mlpdkf_results.csv'))
 
 
 

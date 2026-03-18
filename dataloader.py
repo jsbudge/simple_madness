@@ -13,10 +13,11 @@ from utils.sklearn_utils import SeasonalSplit, get_legendre_pipeline
 
 
 class GameDataset(Dataset):
-    def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, game_num: int = 0, seed: int = 7):
+    def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, game_num: int = 0,
+                 data_name: str = 'kalman_data', seed: int = 7):
         # Load in data
         self.datapath = datapath
-        raw_data = pd.read_csv(Path(f'{datapath}/kalman_data.csv'))
+        raw_data = pd.read_csv(Path(f'{datapath}/{data_name}.csv'))
         raw_data = raw_data.loc[raw_data['season'] == season] if is_val else raw_data.loc[raw_data['season'] != season]
         raw_data = raw_data.loc[raw_data['season'] != 2021]
         self.min_size = raw_data.groupby(['season', 'tid']).count().min().values[0]
@@ -58,18 +59,23 @@ class GameDataset(Dataset):
 
 
 class KalmanDataset(Dataset):
-    def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, is_tourney: bool = False, seed: int = 7):
+    def __init__(self, datapath: str = './data', is_val: bool = False, season: int = 2023, is_tourney: bool = False,
+                 data_name: str = None, seed: int = 7):
         # Load in data
         self.datapath = datapath
         gids = pd.read_csv(Path(f'{datapath}/GameDataAdv.csv')).set_index(['gid', 'season', 'tid', 'oid'])
         bids = pd.read_csv(Path(f'{datapath}/GameDataBasic.csv')).set_index(['gid', 'season', 'tid', 'oid'])
-        avs = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
+        if data_name is None:
+            avs = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
+        else:
+            avs = pd.read_csv(Path(f'{datapath}/{data_name}.csv')).set_index(['season', 'tid'])
         if is_tourney:
             data = pd.read_csv(Path(f'{datapath}/TourneyResults.csv')).set_index(['gid', 'season', 'tid', 'oid'])
         else:
             data = gids.loc[gids.index.get_level_values(1) == season] if is_val else gids.loc[
                 gids.index.get_level_values(1) != season]
         data = data.loc[:, 2011:, :, :]
+        data = data.loc[data.index.get_level_values(1) != 2021]
         d0, d1 = getMatches(data, avs)
         if is_tourney:
             home = np.zeros((data.shape[0], 1))
@@ -100,6 +106,7 @@ class GameDataModuleCV(LightningDataModule):
             is_tourney: bool = False,
             season: int = 2023,
             game_num: int = 0,
+            data_name: str = 'kalman_data',
             **kwargs,
     ):
         super().__init__()
@@ -116,10 +123,11 @@ class GameDataModuleCV(LightningDataModule):
         self.is_tourney = is_tourney
         self.season = season
         self.game_num = game_num
+        self.data_name = data_name
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = GameDataset(self.datapath, season=self.season, game_num=self.game_num)
-        self.val_dataset = GameDataset(self.datapath, season=self.season, is_val=True)
+        self.train_dataset = GameDataset(self.datapath, season=self.season, game_num=self.game_num, data_name=self.data_name)
+        self.val_dataset = GameDataset(self.datapath, season=self.season, is_val=True, data_name=self.data_name)
 
     def changeSeason(self, season: int, is_tourney: bool = False) -> None:
         self.season = season
@@ -156,6 +164,7 @@ class KalmanDataModuleCV(LightningDataModule):
             datapath: str = './data',
             is_tourney: bool = False,
             season: int = 2023,
+            data_name: str = None,
             **kwargs,
     ):
         super().__init__()
@@ -171,10 +180,11 @@ class KalmanDataModuleCV(LightningDataModule):
         self.datapath = datapath
         self.is_tourney = is_tourney
         self.season = season
+        self.data_name = data_name
 
     def setup(self, stage: Optional[str] = None) -> None:
-        self.train_dataset = KalmanDataset(self.datapath, season=self.season, is_tourney=self.is_tourney)
-        self.val_dataset = KalmanDataset(self.datapath, season=self.season, is_tourney=self.is_tourney, is_val=True)
+        self.train_dataset = KalmanDataset(self.datapath, season=self.season, is_tourney=self.is_tourney, data_name=self.data_name)
+        self.val_dataset = KalmanDataset(self.datapath, season=self.season, is_tourney=self.is_tourney, data_name=self.data_name, is_val=True)
 
     def changeSeason(self, season: int) -> None:
         self.season = season

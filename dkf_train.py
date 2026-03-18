@@ -2,8 +2,8 @@ import pandas as pd
 import torch
 from pytorch_lightning import Trainer, loggers, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, StochasticWeightAveraging, ModelCheckpoint
-from dataloader import GameDataModuleCV
-from torch_model import DKF
+from dataloader import GameDataModuleCV, KalmanDataModuleCV
+from torch_model import DKF, MMClassifier
 import numpy as np
 from utils.dataframe_utils import prepFrame, getMatches, date_weight, normalize, getPossMatches
 from tqdm import tqdm
@@ -66,7 +66,7 @@ if __name__ == '__main__':
         for s in range(2011, 2027):
             _, u_data = getPossMatches(raw_data, s, use_seed=False, datapath=data.train_dataset.datapath, gender=gender)
             tids = list(set(u_data.index.get_level_values(2)))
-            results = pd.DataFrame(columns=['season', 'tid'] + [f't_{i}' for i in range(50)])
+            results = pd.DataFrame(columns=['season', 'tid'] + [f't_{i}' for i in range(90)])
             results['season'] = np.ones(len(tids)).astype(int) * s
             results['tid'] = tids
             results = results.set_index(['season', 'tid'])
@@ -84,6 +84,31 @@ if __name__ == '__main__':
             final = pd.concat([final, results])
 
     final.to_csv(f'{data.train_dataset.datapath}/dkf_data.csv')
+
+    config['class_model']['dataloader']['is_tourney'] = True
+    tdata = KalmanDataModuleCV(**config['class_model']['dataloader'], data_name='dkf_data')
+    tdata.setup()
+
+    mdl_name = f"{config['class_model']['name']}"
+    config['class_model']['data_sz'] = results.shape[1]
+    model = MMClassifier(**config['class_model'])
+    logger = loggers.TensorBoardLogger(config['class_model']['training']['log_dir'], version=0, name=mdl_name)
+    expected_lr = max((config['class_model']['lr'] * config['class_model']['scheduler_gamma'] ** (
+                config['class_model']['training']['max_epochs'] *
+                config['class_model']['training']['swa_start'])), 1e-9)
+    print("======= Training =======")
+    trainer = Trainer(logger=logger, max_epochs=config['class_model']['training']['max_epochs'],
+                      default_root_dir=config['class_model']['training']['weights_path'], num_sanity_val_steps=0,
+                      log_every_n_steps=config['class_model']['training']['log_epoch'], callbacks=
+                      [EarlyStopping(monitor='train_loss', patience=config['class_model']['training']['patience'],
+                                     check_finite=True),
+                       StochasticWeightAveraging(swa_lrs=expected_lr,
+                                                 swa_epoch_start=config['class_model']['training']['swa_start']),
+                       ModelCheckpoint(monitor='train_loss')])
+    try:
+        trainer.fit(model, datamodule=data)
+    except KeyboardInterrupt:
+        print('Training interrupted by user.')
 
 
 

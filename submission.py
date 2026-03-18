@@ -1,8 +1,8 @@
 import pandas as pd
+from bracket import generateBracket, applyResultsToBracket
 from tqdm import tqdm
-from bracket import generateBracket, applyResultsToBracket, scoreBracket
 
-model = 'rfc'
+model = 'mlpdkf'
 results_frame = pd.read_csv(f'./data/{model}_results.csv').set_index(['gid', 'season', 'tid', 'oid'])
 submission_frame = pd.read_csv('./data/SampleSubmissionStage2.csv')
 
@@ -12,8 +12,14 @@ submission_frame = pd.read_csv('./data/SampleSubmissionStage2.csv')
 
 test_br = generateBracket(2026, False, datapath='./data')
 for i in range(10):
-    test_br = applyResultsToBracket(test_br, results_frame, select_random=True, random_limit=1.)
-    with open(f'./brackets/{model}_{i}.txt', 'w') as f:
+    test_br = applyResultsToBracket(test_br, results_frame, select_random=True, random_limit=.8)
+    with open(f'./brackets/{model}_{i}_({abs(test_br.log_likelihood):.3f}_mens).txt', 'w') as f:
+        f.write(str(test_br))
+
+test_br = generateBracket(2026, False, datapath='./data', gender='W')
+for i in range(10):
+    test_br = applyResultsToBracket(test_br, results_frame, select_random=True, random_limit=.8)
+    with open(f'./brackets/{model}_{i}_({abs(test_br.log_likelihood):.3f}_womens).txt', 'w') as f:
         f.write(str(test_br))
 
 
