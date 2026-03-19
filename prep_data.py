@@ -4,10 +4,9 @@ import pandas as pd
 from pathlib import Path
 from sklearn.linear_model import Ridge
 from sklearn.decomposition import TruncatedSVD
-from utils.dataframe_utils import prepFrame, addAdvStatstoFrame, addSeasonalStatsToFrame, normalize
+from utils.dataframe_utils import prepFrame, addAdvStatstoFrame, addSeasonalStatsToFrame, normalize, glicko_vol, getMatches
 from scipy.optimize import basinhopping
 from tqdm import tqdm
-import torch
 
 with open('./run_params.yaml', 'r') as file:
     try:
@@ -51,45 +50,6 @@ avdf[infdf.columns] = infdf.groupby(['season', 'tid']).mean().values
 # Get resiliency stats - how variable the team is compared to the rest of the world
 # Formulated so that a higher resiliency score means you have less variance than the average team
 avdf[[f'{c}_res' for c in stddf.columns]] = stddf - adf.groupby(['season', 'tid']).std().groupby(['season']).mean()
-
-print('Running skill stats...')
-avdf_norm = normalize(avdf, to_season=True)
-# Add new stats based on specific areas of the game
-# PASSING
-# stats that affect passing - ast, ast%, a/to, to, to%, econ
-# We'll connect them here to normalized resiliency
-ridge = Ridge()
-ridge.fit(avdf[['t_ast%', 't_a/to', 't_to%', 't_econ']], avdf_norm['t_ast%_res'])
-passer_rating = ridge.predict(adf[['t_ast%', 't_a/to', 't_to%', 't_econ']])
-avdf['t_passrtg'] = pd.DataFrame(index=adf.index, columns=['t_passrtg'],
-                                 data=ridge.predict(adf[['t_ast%', 't_a/to', 't_to%', 't_econ']])).groupby(
-    ['season', 'tid']).mean()
-avdf['o_passrtg'] = pd.DataFrame(index=adf.index, columns=['o_passrtg'],
-                                 data=ridge.predict(adf[['o_ast%', 'o_a/to', 'o_to%', 'o_econ']].values)).groupby(
-    ['season', 'tid']).mean()
-
-# RIM PROTECTION
-# stats that affect this - blk%, 3/two%_inf, fg2%_inf
-# I'm going to regress this against normalized opponent fg2%
-ridge = Ridge()
-ridge.fit(avdf[['t_blkperp', 'o_3two%', 'o_fg2%']], avdf_norm['t_fg2%_inf'])
-avdf['t_rimprot'] = pd.DataFrame(index=adf.index, columns=['t_rimprot'],
-                                 data=ridge.predict(adf[['t_blkperp', 'o_3two%', 'o_fg2%']])).groupby(
-    ['season', 'tid']).mean()
-avdf['o_rimprot'] = pd.DataFrame(index=adf.index, columns=['o_rimprot'],
-                                 data=ridge.predict(adf[['o_blkperp', 't_3two%', 't_fg2%']].values)).groupby(
-    ['season', 'tid']).mean()
-
-# PERIMETER DEFENSE
-# stats that affect this - 3/two%_inf, fg3%_inf, ast%_inf, to%_inf
-ridge = Ridge()
-ridge.fit(avdf[['o_ast%', 'o_3two%', 'o_fg3%', 'o_to%']], avdf_norm['t_fg3%_inf'])
-avdf['t_perimdef'] = pd.DataFrame(index=adf.index, columns=['t_perimdef'],
-                                  data=ridge.predict(adf[['o_ast%', 'o_3two%', 'o_fg3%', 'o_to%']])).groupby(
-    ['season', 'tid']).mean()
-avdf['o_perimdef'] = pd.DataFrame(index=adf.index, columns=['o_perimdef'],
-                                  data=ridge.predict(adf[['t_ast%', 't_3two%', 't_fg3%', 't_to%']].values)).groupby(
-    ['season', 'tid']).mean()
 
 # Run elo ratings
 print('Running elo ratings...')
@@ -145,8 +105,7 @@ def optElo(x):
 elo_params = np.array([0.3896076731384477, 6.51988202753904, 34.11927604457895, 0.17251109126016217])
 if config['load_data']['run_elo_opt']:
     print('Optimizing elo...')
-    opt_res = basinhopping(optElo, elo_params,
-                           minimizer_kwargs=dict(bounds=[(0.1, 10.), (0.1, 100.), (.1, 100), (-10., 10.)]))
+    opt_res = basinhopping(optElo, elo_params, minimizer_kwargs=dict(bounds=[(0.1, 10.), (0.1, 100.), (.1, 100), (-10., 10.)]))
     # Add them to the adv frame (make sure the game ids are the same, though)
     sc_out = runElo(opt_res['x'])
 else:
@@ -162,7 +121,79 @@ adf.loc[joiner_df.index, ['t_elo', 'o_elo']] = joiner_df[['t_elo', 'o_elo']]
 adf.loc[np.isnan(adf['t_elo']), ['t_elo', 'o_elo']] = joiner_df[['o_elo', 't_elo']].values
 
 avdf[['t_elo', 'o_elo']] = adf[['t_elo', 'o_elo']].groupby(['season', 'tid']).mean()
+
+
 # Run Glicko ratings
+# Don't duplicate for the losers because we want to play each game once
+scdf = prepFrame(mcdf, False)
+tids = list(set(scdf.index.get_level_values(2)))
+
+# curr_elo = np.ones(max(tids) + 1) * 1500
+scdf = scdf.sort_values(by=['season', 'daynum'])
+scdf['mov'] = scdf['t_score'] - scdf['o_score']
+scdf['t_glicko'] = 1500.
+scdf['o_glicko'] = 1500.
+def runGlicko2(x):
+    scale = 173.7178
+    scarray = scdf.reset_index().values
+    curr_gl = np.zeros(max(tids) + 1)
+    curr_gl[tids] = 1500.
+    curr_vol = np.ones(max(tids) + 1) * .06
+    curr_rd = np.ones(max(tids) + 1) * x[1] / scale
+    curr_seas = 2001
+    tau = x[0]
+    for n in range(scarray.shape[0]):
+        if curr_seas != scarray[n, 1]:
+            # Update volatility to reflect change in season
+            for val in curr_rd:
+                val = x[1] / scale
+            for val in curr_vol:
+                val = .06
+            for val in curr_gl:
+                val += (1500. - val) * x[2]
+            # Shift mean back to 1500
+            curr_gl -= (curr_gl[tids].mean() - 1500.)
+        curr_seas = scarray[n, 1]
+        w = scarray[n, 9] > 0.
+        # Get scaled r0 values into the results array
+        scarray[n, -2:] = [curr_gl[int(scarray[n, 2])], curr_gl[int(scarray[n, 3])]]
+
+        # compute new vol rating
+        vol0, v0, E0, g0 = glicko_vol(float(w), curr_vol[int(scarray[n, 2])], curr_rd[int(scarray[n, 3])],
+                                                  curr_gl[int(scarray[n, 2])], (curr_gl[int(scarray[n, 3])] - 1500) / scale, tau)
+        vol1, v1, E1, g1 = glicko_vol(float(not w), curr_vol[int(scarray[n, 3])], curr_rd[int(scarray[n, 2])],
+                              curr_gl[int(scarray[n, 3])], (curr_gl[int(scarray[n, 2])] - 1500) / scale, tau)
+        curr_rd[int(scarray[n, 2])] = 1 / (np.sqrt(1 / (curr_rd[int(scarray[n, 2])]**2 + vol0**2)) + 1 / v0)
+        curr_rd[int(scarray[n, 3])] = 1 / (np.sqrt(1 / (curr_rd[int(scarray[n, 3])] ** 2 + vol1 ** 2)) + 1 / v1)
+
+        curr_gl[int(scarray[n, 2])] += scale * curr_rd[int(scarray[n, 2])]**2 * (g0 * (w - E0))
+        curr_gl[int(scarray[n, 3])] += scale * curr_rd[int(scarray[n, 3])] ** 2 * (g1 * (float(not w) - E1))
+    return scarray
+
+def optGlicko(x):
+    sc_x = runGlicko2(x)
+    return 1 - np.logical_and((sc_x[:, 10] - sc_x[:, 11] > 0), sc_x[:, 9] > 0).sum() / sc_x.shape[0]
+
+
+gl_params = np.array([0.5, 350., .15])
+if config['load_data']['run_elo_opt']:
+    print('Optimizing elo...')
+    opt_res = basinhopping(optGlicko, gl_params, minimizer_kwargs=dict(bounds=[(0.1, 1.), (100., 1000.)]))
+    # Add them to the adv frame (make sure the game ids are the same, though)
+    sc_out = runGlicko(opt_res['x'])
+else:
+    print('Not optimizing elo.')
+    sc_out = runGlicko2(gl_params)
+scdf = pd.DataFrame(index=scdf.index, columns=scdf.columns, data=sc_out[:, 4:])
+joiner_df = sdf.reset_index()[['season', 'tid', 'oid', 'daynum', 'gid']].merge(
+    scdf.reset_index()[['season', 'tid', 'oid', 'daynum', 't_glicko', 'o_glicko']],
+    on=['season', 'tid', 'oid', 'daynum'])
+joiner_df = joiner_df.set_index(['gid', 'season', 'tid', 'oid'])
+
+adf.loc[joiner_df.index, ['t_glicko', 'o_glicko']] = joiner_df[['t_glicko', 'o_glicko']]
+adf.loc[np.isnan(adf['t_glicko']), ['t_glicko', 'o_glicko']] = joiner_df[['o_glicko', 't_glicko']].values
+
+avdf[['t_glicko', 'o_glicko']] = adf[['t_glicko', 'o_glicko']].groupby(['season', 'tid']).mean()
 
 # Consolidate massey ordinals in a logical way
 ord_fnme = Path(f"{config['load_data']['data_path']}/MMasseyOrdinals.csv")
@@ -175,25 +206,29 @@ ord_id = sdf.reset_index()[['season', 'tid', 'oid', 'daynum', 'gid']].rename(
 ord_id = ord_id[ord_id['Season'] > 2002]
 # adf[['t_rank', 'o_rank']] = 0.
 
-'''print('Running ranking consolidation...')
+print('Running ranking consolidation...')
 if config['load_data']['run_rank_opt']:
     av_acc = dict(zip(ord_df.columns, np.zeros(ord_df.shape[1])))
 for t in tqdm(tids):
-    t_ords = ord_df.loc[:, t, :]
+    try:
+        t_ords = ord_df.loc[:, t, :]
+    except KeyError:
+        continue
     ord_id_local = ord_id.loc[np.logical_or(ord_id['TeamID'] == t, ord_id['oid'] == t)].set_index(['Season', 'RankingDayNum'])
     check = ord_id_local.join(t_ords, how='left', lsuffix='_left', rsuffix='_right')
     check = check.loc[check['TeamID'] == t]
     check['t_rank'] = check.reset_index().ffill().drop(
         columns=['Season', 'RankingDayNum', 'TeamID', 'gid', 'oid']).mean(axis=1, skipna=True).values
     check = check.reset_index().rename(columns={'Season': 'season', 'TeamID': 'tid'}).set_index(['gid', 'season', 'tid', 'oid'])[['t_rank']]
-    check = check.fillna(400.)
+    # check = check.fillna(999.)
     adf.loc[check.index, 't_rank'] = check['t_rank']
+adf['t_rank'] = adf['t_rank'].fillna(999.)
 
 ind_0 = adf.reset_index().drop_duplicates(subset=['gid'], keep='first').set_index(['gid', 'season', 'tid', 'oid']).index
 ind_1 = adf.reset_index().drop_duplicates(subset=['gid'], keep='last').set_index(['gid', 'season', 'tid', 'oid']).index
 adf.loc[ind_0, 'o_rank'] = adf.loc[ind_1, 't_rank'].values
 adf.loc[ind_1, 'o_rank'] = adf.loc[ind_0, 't_rank'].values
-avdf[['t_rank', 'o_rank']] = adf[['t_rank', 'o_rank']].groupby(['season', 'tid']).mean()'''
+avdf[['t_rank', 'o_rank']] = adf[['t_rank', 'o_rank']].groupby(['season', 'tid']).mean()
 
 adf[['t_score', 'o_score', 'numot']] = sdf[['t_score', 'o_score', 'numot']]
 
@@ -240,22 +275,11 @@ for gender in ['M', 'W']:
 ncaa_tdf['t_win'] = ncaa_tdf['t_score'] - ncaa_tdf['o_score'] > 0
 ncaa_tdf = ncaa_tdf.sort_index().loc[:, 2011:, :, :]
 
+n0, n1 = getMatches(ncaa_tdf, avdf[['t_elo', 't_glicko', 't_rank']])
+ncaa_tdf['t_expwin'] = (n0['t_elo'] - n1['t_elo']) > 0
+
 if config['load_data']['save_files']:
     ncaa_tdf.to_csv(Path(f'{config["load_data"]["save_path"]}/TourneyResults.csv'))
-
-'''# merge information with teams
-print('Generating tournament training data...')
-avdf_norm = normalize(avdf, to_season=True)
-# tdf, odf = getMatches(ncaa_tdf, avdf_norm)
-# results_df = ncaa_tdf.loc[tdf.index, ['t_win']]'''
-
-# Use this data to build initial state vectors for teams
-init_df = adf[['t_elo']].groupby(['season', 'tid']).first().reset_index()
-
-last_season_conf = conf
-last_season_conf['season'] += 1
-init_df = init_df.merge(last_season_conf, how='left', on=['season', 'tid']).drop(columns=['ConfAbbrev']).set_index(['season', 'tid'])
-init_df = (init_df - adf['t_elo'].mean()) / adf['t_elo'].std()
 
 # Add coaches - impute for the girls
 coaches = pd.read_csv(Path(f"{config['load_data']['data_path']}/MTeamCoaches.csv")).rename(columns={'TeamID': 'tid', 'Season': 'season'})
@@ -266,39 +290,15 @@ tourney_wins = coaches.loc[coaches['LastDayNum'] == 154]
 win_df = tourney_wins.join(ncaa_tdf.groupby(['season', 'tid']).sum(), how='left', on=['season', 'tid']).fillna(0)
 win_df['coach_twins'] = win_df[['CoachName', 't_win']].groupby(['CoachName']).cumsum()
 win_df['coach_twins'] -= win_df['t_win']
-coaches = coaches.loc[coaches['FirstDayNum'] == 0]
-coaches = coaches.reset_index().merge(win_df[['season', 'CoachName', 'coach_twins']], on=['season', 'CoachName'])
+win_df['coach_winoverexp'] = win_df[['CoachName', 't_expwin']].groupby(['CoachName']).cumsum()
+win_df['coach_winoverexp'] -= win_df['t_expwin']
+win_df['coach_winoverexp'] = win_df['coach_twins'] - win_df['coach_winoverexp']
+coaches = coaches.loc[coaches['LastDayNum'] == 154]
+coaches = coaches.reset_index().merge(win_df[['season', 'CoachName', 'coach_twins', 'coach_winoverexp']], on=['season', 'CoachName'])
 coaches = coaches.set_index(['season', 'tid']).drop(columns=['index', 'FirstDayNum', 'LastDayNum', 'CoachName', 'span'])
 coaches = (coaches - coaches.mean()) / coaches.std()
-init_df = init_df.join(coaches, how='left', on=['season', 'tid'])
 
-init_df = init_df.fillna(0)  # This sets all NaNs to the mean so we don't consider them
-# avdf_norm = avdf_norm.join(init_df)
+avdf = normalize(avdf, to_season=True).join(coaches, how='left', on=['season', 'tid']).fillna(0.)
 if config['load_data']['save_files']:
-    avdf_norm.to_csv(Path(f'{config["load_data"]["save_path"]}/Averages.csv'))
-
-dpath = config['load_data']['data_path']
-
-from utils.dataframe_utils import date_weight, getMatches
-
-tdata = pd.read_csv(f'{dpath}/GameDataAdv.csv').set_index(['gid', 'season', 'tid', 'oid'])
-tdata['t_oppscore'] = tdata['o_score']
-gdata = pd.read_csv(f'{dpath}/GameDataBasic.csv').set_index(['gid', 'season', 'tid', 'oid'])
-tdata_av = normalize(date_weight(tdata, gdata))
-avdf_norm = avdf_norm.join(tdata_av, lsuffix='_a', rsuffix='_t').join(init_df, lsuffix='_i', rsuffix='_av')
-matches = getMatches(gdata, avdf_norm)
-match = matches[0].join(matches[1], lsuffix='_t', rsuffix='_o')
-from sklearn.decomposition import TruncatedSVD
-svd = TruncatedSVD(n_components=90)
-u_data = pd.DataFrame(data=svd.fit_transform(match), index=match.index)
-u_data['elo'] = tdata.loc[u_data.index, 't_elo']
-u_data = normalize(u_data)
-u_data['gloc'] = gdata.loc[u_data.index, 'gloc']
-u_data.columns = [f'o_{col}' for col in u_data.columns]
-
-out_data = normalize(tdata[['t_score', 't_oppscore']]).join(u_data, how='outer')
-
-if config['load_data']['save_files']:
-    avdf_norm = avdf_norm.groupby(['season', 'tid']).first()
-    avdf_norm.to_csv(Path(f'{config["load_data"]["save_path"]}/Averages.csv'))
-    out_data.to_csv(f'{dpath}/kalman_data.csv')
+    avdf = avdf.groupby(['season', 'tid']).first()
+    avdf.to_csv(Path(f'{config["load_data"]["save_path"]}/Averages.csv'))

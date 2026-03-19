@@ -142,6 +142,7 @@ def addAdvStatstoFrame(df: DataFrame, add_to_frame: bool = False) -> DataFrame:
     out_df['t_offrat'] = df['t_score'] * 100 / out_df['t_poss']
     out_df['t_r%'] = (df['t_or'] + df['t_dr']) / (df['t_or'] + df['t_dr'] + df['o_or'] + df['o_dr'])
     out_df['t_ast%'] = df['t_ast'] / df['t_fgm']
+    out_df['t_nonast%'] = 1 - out_df['t_ast%']
     out_df['t_3two%'] = df['t_fga3'] / df['t_fga']
     out_df['t_ft/a'] = df['t_fta'] / (df['t_fga'] * 2 + df['t_fga3'])
     out_df['t_ft%'] = df['t_ftm'] / df['t_fta']
@@ -174,6 +175,7 @@ def addAdvStatstoFrame(df: DataFrame, add_to_frame: bool = False) -> DataFrame:
     out_df['o_offrat'] = df['o_score'] * 100 / out_df['o_poss']
     out_df['o_r%'] = 1 - out_df['t_r%']
     out_df['o_ast%'] = df['o_ast'] / df['o_fgm']
+    out_df['o_nonast%'] = 1 - out_df['o_ast%']
     out_df['o_3two%'] = df['o_fga3'] / df['o_fga']
     out_df['o_ft/a'] = df['o_fta'] / (df['o_fga'] * 2 + df['o_fga3'])
     out_df['o_ft%'] = df['o_ftm'] / df['o_fta']
@@ -209,9 +211,21 @@ def addAdvStatstoFrame(df: DataFrame, add_to_frame: bool = False) -> DataFrame:
     # out_df['o_tie'] = out_df['o_pie'] / (out_df['t_pie'] + out_df['o_pie'])
 
     # third order derived stats
-    eff_model = np.polyfit(out_df['t_efg%'], out_df['t_offrat'], 1)
-    out_df['t_offeff'] = out_df['t_offrat'] - np.poly1d(eff_model)(out_df['t_efg%'])
-    out_df['o_offeff'] = out_df['o_offrat'] - np.poly1d(eff_model)(out_df['o_efg%'])
+    # model used to fit:
+    # eff_model = np.polyfit(out_df['t_efg%'], out_df['t_offrat'], 1)
+    out_df['t_offeff'] = out_df['t_offrat'] - (out_df['t_efg%'] * 162.7777 + 24.509)
+    out_df['o_offeff'] = out_df['o_offrat'] - (out_df['o_efg%'] * 162.7777 + 24.509)
+
+    for t in ['t', 'o']:
+        a0 = df[f'{t}_ast'] / out_df[f'{t}_poss']
+        b0 = df[f'{t}_to'] / out_df[f'{t}_poss']
+        # A = np.array([a0 * 0 + 1, a0, b0, a0 * b0]).T
+        # coeff, r, rank, s = np.linalg.lstsq(A, out_df[f'{t}_offrat'])
+        out_df[f'{t}_single_scorer'] = np.sqrt(a0**2 + b0**2)
+        out_df[f'{t}_egal_offense'] = np.sqrt((1 - a0)**2 + (1 - b0)**2)
+        out_df[f'{t}_struggle_bus'] = np.sqrt(a0**2 + (1 - b0)**2)
+        out_df[f'{t}_beautiful_game'] = np.sqrt((1 - a0)**2 + b0**2)
+        out_df[f'{t}_quad_eff'] = out_df[f'{t}_offrat'] - (99.254 + a0 * 121.68289 + b0 * -116.599 + a0 * b0 * 105.24299)
 
     return df.merge(out_df, right_index=True, left_index=True) if add_to_frame else out_df
 
@@ -286,3 +300,37 @@ def date_weight(df, dates):
     df_weight = dates['daynum']
     return df.mul(df_weight, axis=0).groupby(['season', 'tid']).sum().mul(
         1 / df_weight.groupby(['season', 'tid']).sum(), axis=0)
+
+
+"""
+GLICKO FUNCTIONS
+"""
+
+def glicko_g(rd: float):
+    return 1 / np.sqrt(1 + 3 * rd**2 / np.pi**2)
+
+
+def glicko_E(rd: float, r0: float, r_p: float):
+    return max(1 / (1 + np.exp(max(0., -glicko_g(rd) * (r0 - r_p)))), .0001)
+
+
+def glicko_v(rd: float, r0: float, r_p: float):
+    return 1 / (glicko_g(rd)**2 * glicko_E(rd, r0, r_p) * (1 - glicko_E(rd, r0, r_p)))
+
+
+def glicko_vol(w: float, vol: float, rd: float, r0: float, r_p: float, tau: float):
+    scale_r0 = (r0 - 1500) / 173.7178
+    v = glicko_v(rd, scale_r0, r_p)
+    E = glicko_E(rd, scale_r0, r_p)
+    g = glicko_g(rd)
+    delta = (g * (w - E)) * v
+    a = np.log(vol**2)
+    x0 = a + 0.
+    x1 = 0.
+    while not np.isclose(x0, x1):
+        x0 = x1
+        d = scale_r0**2 + v + np.exp(x0)
+        h1 = -(x0 - a) / tau**2 - .5 * np.exp(x0) / d + .5 * np.exp(x0) * (delta / d)**2
+        h2 = -1 / tau**2 - .5 * np.exp(x0) * (scale_r0**2 + v) / d**2 + .5 * delta**2 * np.exp(x0) * (scale_r0**2 + v - np.exp(x0)) / d**3
+        x1 = x0 - (h1 / h2)
+    return np.exp(x1 / 2), v, E, g

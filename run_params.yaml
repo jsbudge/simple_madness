@@ -12,8 +12,8 @@ prep_data:
 
 dataloader:
   datapath: ./data
-  train_batch_size: 4
-  val_batch_size: 4
+  train_batch_size: 16
+  val_batch_size: 16
   split: .7
   season: 2023
   single_example: False
@@ -21,8 +21,8 @@ dataloader:
 
 class_model:
   name: MMClassifier
-  data_sz: 90
-  state_sz: 50
+  data_sz: 206
+  state_sz: 150
   lr: 0.001
   weight_decay: 0.00001
   warmup: 100
@@ -31,7 +31,7 @@ class_model:
   training:
     log_dir: ./logs
     swa_start: .7
-    max_epochs: 150
+    max_epochs: 10
     log_epoch: 500
     weights_path: ./models
     warm_start: False
@@ -45,7 +45,6 @@ class_model:
     season: 2023
     single_example: False
     pin_memory: False
-    data_name: dkf_data
 
 model:
   name: DKF
