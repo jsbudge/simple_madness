@@ -7,6 +7,7 @@ from torch_model import MMClassifier
 import numpy as np
 import yaml
 from pathlib import Path
+from tqdm import tqdm
 
 
 if __name__ == '__main__':
@@ -49,14 +50,14 @@ if __name__ == '__main__':
     tdata = KalmanDataModuleCV(**config['class_model']['dataloader'])
     tdata.setup()
     model.lr = 1e-7
-    model.max_iters = 10000
+    model.max_iters = 40000
 
-    trainer = Trainer(logger=logger, max_epochs=150,
+    trainer = Trainer(logger=logger, max_epochs=100,
                       default_root_dir=config['class_model']['training']['weights_path'], num_sanity_val_steps=0,
                       log_every_n_steps=config['class_model']['training']['log_epoch'], callbacks=
                       [EarlyStopping(monitor='train_loss', patience=config['class_model']['training']['patience'],
                                      check_finite=True),
-                       StochasticWeightAveraging(swa_lrs=expected_lr,
+                       StochasticWeightAveraging(swa_lrs=1e-6,
                                                  swa_epoch_start=config['class_model']['training']['swa_start']),
                        ModelCheckpoint(monitor='train_loss')])
 
@@ -68,26 +69,23 @@ if __name__ == '__main__':
 
     datapath = './data'
 
-    avs = pd.read_csv(Path(f'{datapath}/dkf_data.csv')).set_index(['season', 'tid'])
+    avs = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
 
     from utils.dataframe_utils import getPossMatches
 
     ps = getPossMatches(avs, 2026, False, False, datapath)
+    psw = getPossMatches(avs, 2026, False, False, datapath, 'W')
     model.eval()
-    model_res = model(torch.tensor(ps[0].values, dtype=torch.float32, device=model.device),
-                      torch.tensor(ps[1].values, dtype=torch.float32, device=model.device),
-                      torch.zeros((ps[0].shape[0], 1), dtype=torch.float32, device=model.device))
-
-    results = pd.DataFrame(index=ps[0].index, columns=['Res'], data=1 - model_res.data.cpu().numpy())
-
-    ps = getPossMatches(avs, 2026, False, False, datapath, 'W')
-    model_res = model(torch.tensor(ps[0].values, dtype=torch.float32, device=model.device),
-                      torch.tensor(ps[1].values, dtype=torch.float32, device=model.device),
-                      torch.zeros((ps[0].shape[0], 1), dtype=torch.float32, device=model.device))
-
-    results = pd.concat([results, pd.DataFrame(index=ps[0].index, columns=['Res'], data=1 - model_res.data.cpu().numpy())])
-
-    results.to_csv(Path(f'{datapath}/mlpdkf_results.csv'))
+    dt_idx = pd.concat([ps[0].reset_index()[['gid', 'season', 'tid', 'oid']],
+                        psw[0].reset_index()[['gid', 'season', 'tid', 'oid']]])
+    dt_idx['gid'] = np.arange(dt_idx.shape[0])
+    results = pd.DataFrame(index=dt_idx[['gid', 'season', 'tid', 'oid']].set_index(['gid', 'season', 'tid', 'oid']).index, columns=['Res'])
+    dt_idx = dt_idx.values
+    for gm in tqdm(dt_idx):
+        results.loc[gm, 'Res'] = 1 - model(tdata.loadTeam(gm[1], gm[2]).unsqueeze(0).to(model.device),
+                                       tdata.loadTeam(gm[1], gm[3]).unsqueeze(0).to(model.device),
+              torch.zeros((1, 1), dtype=torch.float32, device=model.device)).item()
+    results.to_csv(Path(f'{datapath}/mlp_results.csv'))
 
 
 

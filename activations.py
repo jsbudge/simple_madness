@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn import functional as tf
 import math
 
 
@@ -148,5 +149,50 @@ class Emitter(nn.Module):
         )
 
     def forward(self, z_t):
-        mu = self.z_to_x(z_t)
-        return mu
+        return self.z_to_x(z_t)
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, hidden_dim, num_heads, dropout=0.1):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
+
+        # Linear layers for Q, K, V projections
+        self.q_linear = nn.Linear(hidden_dim, hidden_dim)
+        self.k_linear = nn.Linear(hidden_dim, hidden_dim)
+        self.v_linear = nn.Linear(hidden_dim, hidden_dim)
+        self.out_linear = nn.Linear(hidden_dim, hidden_dim)
+
+        self.dropout = nn.Dropout(dropout)
+        self.scale = torch.sqrt(torch.FloatTensor([self.head_dim]))
+
+    def forward(self, query, key, value, mask=None):
+        batch_size = query.shape[0]
+
+        # Linear projections and reshape for multi-head
+        Q = self.q_linear(query).view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        K = self.k_linear(key).view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        V = self.v_linear(value).view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # Scaled dot-product attention
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale.to(K.device)
+
+        if mask is not None:
+            # mask = torch.bmm(mask.unsqueeze(-1), mask.unsqueeze(-2))
+            scores = scores.masked_fill(mask.unsqueeze(-2).unsqueeze(-2).expand_as(scores) == 0, 1e-9)
+
+        attention_weights = tf.softmax(scores, dim=-1)
+        attention_weights = self.dropout(attention_weights)
+
+        # Apply attention to values
+        context = torch.matmul(attention_weights, V)
+
+        # Reshape and apply output projection
+        context = context.transpose(1, 2).contiguous().view(
+            batch_size, -1, self.hidden_dim
+        )
+        output = self.out_linear(context)
+
+        return output, attention_weights

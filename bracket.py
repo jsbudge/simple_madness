@@ -3,6 +3,7 @@ import pandas as pd
 from anytree import NodeMixin, RenderTree, AsciiStyle
 from anytree.iterators.zigzaggroupiter import ZigZagGroupIter
 from utils.dataframe_utils import loadTeamNames
+from collections import Counter
 
 
 def scoreBracket(br, truth_br, score_type=None):
@@ -80,12 +81,16 @@ def generateBracket(season: int, use_results: bool = True, datapath: str = './da
 
 
 class Game(NodeMixin):
-    tid: int
+    tid: int | list
     win_perc: float = 1.
-    slot_win: str
+    slot_win: str | list
     slot_llikelihood: float = 0.
+    id: str
+    round: int
+    children: list
+    data: tuple
 
-    def __init__(self, game_id, tourn_round=None, parent=None, data=None, children=None):
+    def __init__(self, game_id: str, tourn_round=None, parent=None, data: tuple = None, children: list = None):
         super().__init__()
         self.parent = parent
         self.data = data
@@ -138,16 +143,25 @@ class Bracket(object):
     def __getitem__(self, nd_id):
         return self.node_dict[nd_id]
 
-    def __str__(self, datapath = "./data"):
+    def __str__(self, datapath: str = "./data"):
         tnames = loadTeamNames(datapath, gender=self.gender)
         total_ll = 0.
         rstr = ''
         for pre, fill, node in RenderTree(self.root, style=AsciiStyle()):
-            treestr = pre + node.id + ' ' + tnames[node.tid]
-            if hasattr(node, 'win_perc') and node.has_children:
+            if isinstance(node.tid, dict):
+                if len(node.tid.keys()) == 1:
+                    treestr = pre + node.id + ' ' + tnames[list(node.tid.keys())[0]]
+                else:
+                    treestr = pre + node.id + '\n'
+                    for key, val in node.tid.items():
+                        treestr += fill + tnames[key] + f': {100 * val:.2f}%\n'
+                    treestr = treestr[:-1]
+            elif hasattr(node, 'win_perc') and node.has_children:
                 wp = node.win_perc#  if node.win_perc > .5 else 1 - node.win_perc
-                treestr += f': {100 * wp:.2f}% - LL: {node.slot_llikelihood:.4f}'
+                treestr = pre + node.id + f' {tnames[node.tid]}: {100 * wp:.2f}% - LL: {node.slot_llikelihood:.4f}'
                 total_ll += node.slot_llikelihood
+            else:
+                treestr = pre + node.id + ' ' + tnames[node.tid]
             rstr += '\n' + treestr.ljust(4)
         rstr += f'\n\nTotal log likelihood: {total_ll:.4f}'
         return rstr
@@ -192,4 +206,26 @@ def applyResultsToBracket(br: Bracket, res: pd.DataFrame,
                 gm.slot_llikelihood = np.log(gm.win_perc * (winner.win_perc if winner.has_children else 1.))
                 gm.slot_win = winner.slot_win
                 gm.tid = winner.tid
+    return br
+
+
+def calcKHighestProbBracket(br: Bracket, res: pd.DataFrame, k: int = 4, n_iters: int = 100) -> Bracket:
+    overall = {}
+    for _ in range(n_iters):
+        res_br = applyResultsToBracket(br, res, select_random=True)
+        for rnd in br.getRounds():
+            for gmid in rnd:
+                gm = res_br[gmid]
+                if gm.id not in overall:
+                    overall[gm.id] = [gm.tid]
+                else:
+                    overall[gm.id].append(gm.tid)
+    for key, val in overall.items():
+        overall[key] = dict(sorted({k: v / n_iters for k, v in Counter(val).items()}.items(), key=lambda item: item[1], reverse=True))
+        overall[key] = {ke: v for i, (ke, v) in enumerate(overall[key].items()) if i < k}
+
+    for rnd in br.getRounds():
+        for gmid in rnd:
+            gm = br[gmid]
+            gm.tid = overall[gm.id]  # winner.tid
     return br

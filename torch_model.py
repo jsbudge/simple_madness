@@ -1,7 +1,7 @@
 from copy import deepcopy
 from typing import Any
 import numpy as np
-from activations import _xavier_init, GatedTransition, Emitter, Combiner, nonlinearities
+from activations import _xavier_init, GatedTransition, Emitter, Combiner, nonlinearities, MultiHeadAttention
 from losses import KLDivProb
 import torch
 from pytorch_lightning import LightningModule
@@ -209,7 +209,7 @@ class DKF(LightningModule):
 
 class MMClassifier(LightningModule):
 
-    def __init__(self, data_sz: int, state_sz: int = 4, activation: str = 'silu', *args, **kwargs):
+    def __init__(self, data_sz: int, state_sz: int = 4, game_sz: int = 36, activation: str = 'silu', num_heads: int = 10, *args, **kwargs):
         super().__init__()
         self.save_hyperparameters()
         self.automatic_optimization = False
@@ -220,15 +220,26 @@ class MMClassifier(LightningModule):
             nn.Linear(state_sz, state_sz),
         )
 
-        self.home_encode = nn.Sequential(
-            nn.Linear(data_sz, state_sz),
-            nn.ReLU(),
-            nn.Linear(state_sz, state_sz),
+        '''self.home_encode = nn.Sequential(
+            nn.Linear(state_sz + 1, state_sz),
+            nn.Sigmoid(),
+        )'''
+
+        assert state_sz % num_heads == 0, 'State size must be divisible by num_heads'
+
+        self.attention = MultiHeadAttention(state_sz, num_heads)
+
+        self.connection = nn.Sequential(
+            nn.Conv1d(game_sz, game_sz, 1),
+            nn.SiLU(),
+            nn.Conv1d(game_sz, 1, 1),
+            nn.LayerNorm(state_sz),
         )
 
         self.classify = nn.Sequential(
-            nn.Linear(state_sz * 2, state_sz),
+            nn.Linear(state_sz * 2 + 1, state_sz),
             nonlinearities[activation],
+            nn.Dropout(p=0.3),
             nn.Linear(state_sz, 1),
             nn.Sigmoid(),
         )
@@ -236,9 +247,15 @@ class MMClassifier(LightningModule):
         _xavier_init(self)
 
     def forward(self, x, y, home):
-        x = self.encode(x) + self.home_encode(x) * home
-        y = self.encode(y) - self.home_encode(y) * home
-        return self.classify(torch.cat([x, y], dim=-1))
+        xmask = (x[..., 0] > -999).float()
+        ymask = (y[..., 0] > -999).float()
+        x = self.encode(x)
+        y = self.encode(y)
+        x0, xa = self.attention(x, y, y, xmask)
+        y0, ya = self.attention(y, x, x, ymask)
+        x0 = self.connection(x0).squeeze(1)
+        y0 = self.connection(y0).squeeze(1)
+        return self.classify(torch.cat([x0, y0, home], dim=-1))
 
     def loss_function(self, y, y_pred):
         return torch.mean((y_pred - y)**2)

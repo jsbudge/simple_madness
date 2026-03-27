@@ -65,10 +65,13 @@ class KalmanDataset(Dataset):
         self.datapath = datapath
         gids = pd.read_csv(Path(f'{datapath}/GameDataAdv.csv')).set_index(['gid', 'season', 'tid', 'oid'])
         bids = pd.read_csv(Path(f'{datapath}/GameDataBasic.csv')).set_index(['gid', 'season', 'tid', 'oid'])
-        if data_name is None:
-            avs = pd.read_csv(Path(f'{datapath}/Averages.csv')).set_index(['season', 'tid'])
-        else:
-            avs = pd.read_csv(Path(f'{datapath}/{data_name}.csv')).set_index(['season', 'tid'])
+
+        # To redo tensors:
+        '''gids = normalize(pd.read_csv(Path(f'{datapath}/GameDataAdv.csv')).set_index(['gid', 'season', 'tid', 'oid']),
+                         to_season=True)
+        for row, grp in gids.groupby(['season', 'tid']):
+            new_array = np.pad(grp.values, ((0, 36 - grp.shape[0]), (0, 0)), constant_values=-999)
+            torch.save(torch.tensor(new_array).float(), Path(f'{datapath}/teams/t{row[0]}_{row[1]}.pt'))'''
         if is_tourney:
             data = pd.read_csv(Path(f'{datapath}/TourneyResults.csv')).set_index(['gid', 'season', 'tid', 'oid'])
         else:
@@ -76,22 +79,23 @@ class KalmanDataset(Dataset):
                 gids.index.get_level_values(1) != season]
         data = data.loc[:, 2011:, :, :]
         data = data.loc[data.index.get_level_values(1) != 2021]
-        d0, d1 = getMatches(data, avs)
+        # d0, d1 = getMatches(data, avs)
         if is_tourney:
             home = np.zeros((data.shape[0], 1))
             self.labels = torch.tensor(data[['t_win']].values.astype(float)).float()
         else:
             home = bids.loc[data.index, ['gloc']].values
             self.labels = torch.tensor((data[['t_mov']].values > 0).astype(float)).float()
-        self.d0 = torch.tensor(d0.values).float()
-        self.d1 = torch.tensor(d1.values).float()
+        self.idx = data.reset_index()[['gid', 'season', 'tid', 'oid']].values.astype(int)
         self.home = torch.tensor(home).float()
 
     def __getitem__(self, idx):
-        return self.d0[idx], self.d1[idx], self.home[idx], self.labels[idx]
+        return (torch.load(Path(f'{self.datapath}/teams/t{self.idx[idx, 1]}_{self.idx[idx, 2]}.pt'), weights_only=True),
+                torch.load(Path(f'{self.datapath}/teams/t{self.idx[idx, 1]}_{self.idx[idx, 3]}.pt'), weights_only=True),
+                self.home[idx], self.labels[idx])
 
     def __len__(self):
-        return self.d0.shape[0]
+        return self.idx.shape[0]
 
 
 class GameDataModuleCV(LightningDataModule):
@@ -189,6 +193,9 @@ class KalmanDataModuleCV(LightningDataModule):
     def changeSeason(self, season: int) -> None:
         self.season = season
         self.setup()
+
+    def loadTeam(self, season: int, tid: int):
+        return torch.load(Path(f'{self.datapath}/teams/t{season}_{tid}.pt'), weights_only=True)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
